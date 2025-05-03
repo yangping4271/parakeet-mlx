@@ -62,7 +62,7 @@ print(result.sentences)
   - `end`: End time in seconds
   - `duration`: Between `start` and `end`.
 
-### Low-Level API
+## Low-Level API
 
 To transcribe log-mel spectrum directly, you can do the following:
 
