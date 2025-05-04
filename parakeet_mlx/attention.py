@@ -125,6 +125,10 @@ class RelPositionMultiHeadAttention(MultiHeadAttention):
         matrix_bd = self.rel_shift(matrix_bd)
         matrix_bd = matrix_bd[:, :, :, : k.shape[-2]] * self.scale
 
+        if mask is not None:
+            mask = mx.expand_dims(mask, 0)
+            matrix_bd[mask] = -mx.inf
+
         o = mx.fast.scaled_dot_product_attention(
             q_u, k, v, scale=self.scale, mask=matrix_bd
         )

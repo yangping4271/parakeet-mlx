@@ -315,14 +315,6 @@ class Conformer(nn.Module):
         else:
             raise NotImplementedError("Unimplemented pre-encoding layer type!")
 
-        B, T, _ = x.shape
-        if T == 0:
-            attn_mask = None
-        else:
-            mask_range = mx.arange(T)[None, :] < out_lengths[:, None]
-            attn_mask = mx.where(mask_range, 0.0, -mx.inf)
-            attn_mask = attn_mask[:, None, None, :].astype(x.dtype)
-
         if cache is None:
             cache = [None] * len(self.layers)
 
@@ -334,6 +326,6 @@ class Conformer(nn.Module):
             )
 
         for layer, c in zip(self.layers, cache):
-            x = layer(x, mask=attn_mask, pos_emb=pos_emb, cache=c)
+            x = layer(x, pos_emb=pos_emb, cache=c)
 
         return x, out_lengths

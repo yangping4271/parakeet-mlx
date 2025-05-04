@@ -64,7 +64,8 @@ def get_logmel(x: mx.array, args: PreprocessArgs) -> mx.array:
         window=args.window,
         n_mels=args.features,
         fmin=0,
-        fmax=8000,
+        fmax=None,
+        norm="slaney",
     )
 
     mel_spec = librosa.power_to_db(mel_spec, ref=np.max)
