@@ -133,12 +133,10 @@ class ConformerBlock(nn.Module):
     ) -> mx.array:
         x += 0.5 * self.feed_forward1(self.norm_feed_forward1(x))
 
-        residual = x
         x_norm = self.norm_self_att(x)
-        attn_output = self.self_attn(
+        x += self.self_attn(
             x_norm, x_norm, x_norm, mask=mask, pos_emb=pos_emb, cache=cache
         )
-        x = residual + attn_output
 
         x += self.conv(self.norm_conv(x))
         x += 0.5 * self.feed_forward2(self.norm_feed_forward2(x))
