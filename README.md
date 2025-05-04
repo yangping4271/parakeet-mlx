@@ -54,6 +54,9 @@ parakeet-mlx <audio_files> [OPTIONS]
 - `--verbose` / `-v` (default: False)
   - Print detailed progress information
 
+- `--fp32` / `--bf16` (default: `bf16`)
+  - Determinate the precision to use
+
 ## Examples
 
 ```bash

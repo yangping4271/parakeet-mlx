@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 import typer
+from mlx.core import bfloat16, float32
 from rich import print
 from rich.progress import (
     BarColumn,
@@ -201,6 +202,9 @@ def transcribe(
         bool,
         typer.Option("--verbose", "-v", help="Print out process and debug messages"),
     ] = False,
+    fp32: Annotated[
+        bool, typer.Option("--fp32/--bf16", help="Use FP32 precision")
+    ] = False,
 ):
     """
     Transcribe audio files using Parakeet MLX models.
@@ -209,7 +213,7 @@ def transcribe(
         print(f"Loading model: [bold cyan]{model}[/bold cyan]...")
 
     try:
-        loaded_model = from_pretrained(model)
+        loaded_model = from_pretrained(model, bfloat16 if not fp32 else float32)
         if verbose:
             print("[green]Model loaded successfully.[/green]")
     except Exception as e:
