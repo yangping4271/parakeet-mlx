@@ -9,19 +9,19 @@ An implementation of the Parakeet models - Nvidia's ASR(Automatic Speech Recogni
 Using [uv](https://docs.astral.sh/uv/) - recommended way:
 
 ```bash
-uv add parakeet-mlx
+uv add parakeet-mlx -U
 ```
 
 Or, for the CLI:
 
 ```bash
-uv tool install parakeet-mlx
+uv tool install parakeet-mlx -U
 ```
 
 Using pip:
 
 ```bash
-pip install parakeet-mlx
+pip install parakeet-mlx -U
 ```
 
 ## CLI Quick Start
