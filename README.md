@@ -12,7 +12,7 @@ Using [uv](https://docs.astral.sh/uv/) - recommended way:
 uv add git+https://github.com/senstella/parakeet-mlx
 ```
 
-Or, for cli:
+Or, for the CLI:
 
 ```bash
 uv tool install git+https://github.com/senstella/parakeet-mlx
