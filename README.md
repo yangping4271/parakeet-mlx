@@ -12,13 +12,63 @@ Using [uv](https://docs.astral.sh/uv/) - recommended way:
 uv add git+https://github.com/senstella/parakeet-mlx
 ```
 
+Or, for cli:
+
+```bash
+uv tool install git+https://github.com/senstella/parakeet-mlx
+```
+
 Using pip:
 
 ```bash
 pip install git+https://github.com/senstella/parakeet-mlx
 ```
 
-## Quick Start
+## CLI Quick Start
+
+```bash
+parakeet-mlx <audio_files> [OPTIONS]
+```
+
+## Arguments
+
+- `audio_files`: One or more audio files to transcribe (WAV, MP3, etc.)
+
+## Options
+
+- `--model` (default: `senstella/parakeet-tdt-0.6b-v2-mlx`)
+  - Hugging Face repository of the model to use
+
+- `--output-dir` (default: current directory)
+  - Directory to save transcription outputs
+
+- `--output-format` (default: srt)
+  - Output format (txt/srt/vtt/json/all)
+
+- `--output-template` (default: `{filename}`)
+  - Template for output filenames, `{filename}`, `{index}`, `{date}` is supported.
+
+- `--highlight-words` (default: False)
+  - Enable word-level timestamps in SRT/VTT outputs
+
+- `--verbose` / `-v` (default: False)
+  - Print detailed progress information
+
+## Examples
+
+```bash
+# Basic transcription
+parakeet-mlx audio.mp3
+
+# Multiple files with word-level timestamps of VTT subtitle
+parakeet-mlx *.mp3 --output-format vtt --highlight-words
+
+# Generate all output formats
+parakeet-mlx audio.mp3 --output-format all
+```
+
+
+## Python API Quick Start
 
 Transcribe a file:
 
@@ -82,7 +132,7 @@ alignments = model.generate(mel)
 
 ## Todo
 
-- [ ] Add CLI for better usability
+- [X] Add CLI for better usability
 - [ ] Streaming input (Although RTF is MUCH higher than 1 currently - it should be much sufficient to stream with current state)
 - [ ] Compiling for RNNT decoder
 - [ ] Add support for other Parakeet varients
