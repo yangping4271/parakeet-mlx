@@ -12,6 +12,7 @@ def from_config(config: dict) -> ParakeetTDT:
     """Loads model from config (randomized weight)"""
     cfg = from_dict(ParakeetTDTArgs, config)  # TODO: model classification logic
     model = ParakeetTDT(cfg)
+    model.eval()  # prevents layernorm not computing correctly on inference!
 
     return model
 
