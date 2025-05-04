@@ -122,11 +122,11 @@ class ParakeetTDT(BaseParakeet):
                             start=time
                             * self.encoder_config.subsampling_factor
                             / self.preprocessor_config.sample_rate
-                            * 160,  # hop
+                            * self.preprocessor_config.hop_length,  # hop
                             duration=self.durations[int(decision)]
                             * self.encoder_config.subsampling_factor
                             / self.preprocessor_config.sample_rate
-                            * 160,  # hop
+                            * self.preprocessor_config.hop_length,  # hop
                             text=tokenizer.decode([int(pred_token)], self.vocabulary),
                         )
                     )
