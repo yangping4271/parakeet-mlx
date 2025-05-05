@@ -18,8 +18,8 @@ class PreprocessArgs:
     features: int
     n_fft: int
     dither: float
-    pad_to: int
-    pad_value: float
+    pad_to: int = 0
+    pad_value: float = 0
 
     @property
     def win_length(self) -> int:

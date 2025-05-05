@@ -17,17 +17,16 @@ class ConformerArgs:
     n_layers: int
     d_model: int
     n_heads: int
-    reduction_factor: int
     ff_expansion_factor: int
     subsampling_factor: int
     self_attention_model: str
     subsampling: str
     conv_kernel_size: int
     subsampling_conv_channels: int
-    use_bias: bool
-    causal_downsampling: bool
-    xscaling: bool
     pos_emb_max_len: int
+    causal_downsampling: bool = False
+    use_bias: bool = True
+    xscaling: bool = False
     pos_bias_u: mx.array | None = None
     pos_bias_v: mx.array | None = None
     subsampling_conv_chunking_factor: int = 1

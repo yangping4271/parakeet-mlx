@@ -13,6 +13,7 @@ from parakeet_mlx.alignment import (
 )
 from parakeet_mlx.audio import PreprocessArgs, get_logmel, load_audio
 from parakeet_mlx.conformer import Conformer, ConformerArgs
+from parakeet_mlx.ctc import AuxCTCArgs, ConvASRDecoder
 from parakeet_mlx.rnnt import JointArgs, JointNetwork, PredictArgs, PredictNetwork
 
 
@@ -30,6 +31,11 @@ class ParakeetTDTArgs:
     decoder: PredictArgs
     joint: JointArgs
     decoding: TDTDecodingArgs
+
+
+@dataclass
+class ParakeetTDTCTCArgs(ParakeetTDTArgs):
+    aux_ctc: AuxCTCArgs
 
 
 class BaseParakeet(nn.Module):
@@ -154,3 +160,14 @@ class ParakeetTDT(BaseParakeet):
             results.append(result)
 
         return results
+
+
+class ParakeetTDTCTC(ParakeetTDT):
+    """MLX Implementation of Parakeet-TDT-CTC Model
+
+    Has ConvASRDecoder decoder in `.ctc_decoder` but `.generate` uses TDT decoder all the times (Please open an issue if you need CTC decoder use-case!)"""
+
+    def __init__(self, args: ParakeetTDTCTCArgs):
+        super().__init__(args)
+
+        self.ctc_decoder = ConvASRDecoder(args.aux_ctc.decoder)
