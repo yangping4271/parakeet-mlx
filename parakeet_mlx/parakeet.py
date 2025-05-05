@@ -20,6 +20,7 @@ from parakeet_mlx.rnnt import JointArgs, JointNetwork, PredictArgs, PredictNetwo
 class TDTDecodingArgs:
     model_type: str
     durations: list[int]
+    greedy: dict | None
 
 
 @dataclass
@@ -66,6 +67,11 @@ class ParakeetTDT(BaseParakeet):
 
         self.vocabulary = args.joint.vocabulary
         self.durations = args.decoding.durations
+        self.max_symbols: int | None = (
+            args.decoding.greedy.get("max_symbols", None)
+            if args.decoding.greedy
+            else None
+        )
 
         self.encoder = Conformer(args.encoder)
         self.decoder = PredictNetwork(args.decoder)
@@ -94,6 +100,7 @@ class ParakeetTDT(BaseParakeet):
             hypothesis = []
 
             time = 0
+            new_symbols = 0
             decoder_hidden = None
 
             while time < max_length:
@@ -134,6 +141,14 @@ class ParakeetTDT(BaseParakeet):
                     decoder_hidden = proposed_decoder_hidden
 
                 time += self.durations[int(decision)]
+                new_symbols += 1
+
+                if self.durations[int(decision)] != 0:
+                    new_symbols = 0
+                else:
+                    if self.max_symbols is not None and self.max_symbols <= new_symbols:
+                        time += 1
+                        new_symbols = 0
 
             result = sentences_to_result(tokens_to_sentences(hypothesis))
             results.append(result)
