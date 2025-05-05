@@ -47,9 +47,6 @@ def load_audio(filename: Path, sampling_rate: int) -> mx.array:
 
 # will implement without librosa later
 def get_logmel(x: mx.array, args: PreprocessArgs) -> mx.array:
-    if args.dither > 0:
-        x = x + mx.random.normal(x.shape) * args.dither
-
     if args.pad_to > 0:
         if x.shape[-1] < args.pad_to:
             pad_length = args.pad_to - x.shape[-1]
