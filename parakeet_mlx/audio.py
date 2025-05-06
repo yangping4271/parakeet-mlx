@@ -141,7 +141,7 @@ def get_logmel(x: mx.array, args: PreprocessArgs) -> mx.array:
     )
 
     x = stft(x, args.n_fft, args.hop_length, args.win_length, window)
-    x = mx.power(x, 2)
+    x = mx.square(mx.abs(x)).astype(mx.float32)
     x = mx.matmul(args._filterbanks.astype(x.dtype), x.T)
     x = mx.log(x + 1e-5)
 
