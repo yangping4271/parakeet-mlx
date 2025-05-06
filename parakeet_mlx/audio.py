@@ -7,7 +7,6 @@ import audresample
 import librosa
 import mlx.core as mx
 import numpy as np
-from parakeet_mlx.alignment import AlignedResult, AlignedToken, tokens_to_sentences, sentences_to_result
 
 
 @dataclass
@@ -47,7 +46,7 @@ class PreprocessArgs:
 
 
 def load_audio(
-        filename: Path, sampling_rate: int, dtype: mx.Dtype = mx.bfloat16
+    filename: Path, sampling_rate: int, dtype: mx.Dtype = mx.bfloat16
 ) -> mx.array:
     signal, original_sampling_rate = audiofile.read(str(filename), always_2d=True)
 
@@ -85,7 +84,7 @@ def bartlett(size):
 
 
 def stft(
-        x, n_fft, hop_length=None, win_length=None, window=None, axis=-1, pad_mode="reflect"
+    x, n_fft, hop_length=None, win_length=None, window=None, axis=-1, pad_mode="reflect"
 ):
     if win_length is None:
         win_length = n_fft
@@ -105,8 +104,8 @@ def stft(
         if pad_mode == "constant":
             return mx.pad(x, [(padding, padding)])
         elif pad_mode == "reflect":
-            prefix = x[1: padding + 1][::-1]
-            suffix = x[-(padding + 1): -1][::-1]
+            prefix = x[1 : padding + 1][::-1]
+            suffix = x[-(padding + 1) : -1][::-1]
             return mx.concatenate([prefix, x, suffix])
         else:
             raise ValueError(f"Invalid pad_mode {pad_mode}")
@@ -142,7 +141,7 @@ def get_logmel(x: mx.array, args: PreprocessArgs) -> mx.array:
     )
 
     x = stft(x, args.n_fft, args.hop_length, args.win_length, window)
-    x = mx.square(mx.abs(x)).astype(mx.float16)
+    x = mx.square(mx.abs(x)).astype(original_dtype)
     x = mx.matmul(args._filterbanks.astype(x.dtype), x.T)
     x = mx.log(x + 1e-5)
 
@@ -159,121 +158,3 @@ def get_logmel(x: mx.array, args: PreprocessArgs) -> mx.array:
     normalized_mel = mx.expand_dims(normalized_mel, axis=0)
 
     return normalized_mel.astype(original_dtype)
-
-
-def get_logmel_fp16(
-        x: mx.array,
-        args: PreprocessArgs,
-        *,
-        power_dtype: mx.Dtype = mx.float16
-) -> mx.array:
-    """
-    Identical signature to parakeet_mlx.audio.get_logmel but keeps the heavy spectrogram in float16, lets you override args.n_fft before the call
-    """
-    if args.pad_to and x.shape[-1] < args.pad_to:
-        x = mx.pad(x, ((0, args.pad_to - x.shape[-1]),),
-                   constant_values=args.pad_value)
-
-    window = {
-        "hanning": hanning,
-        "hamming": hamming,
-        "blackman": blackman,
-        "bartlett": bartlett,
-    }.get(args.window, hanning)(args.win_length).astype(power_dtype)
-
-    X = stft(
-        x,
-        n_fft=args.n_fft,
-        hop_length=args.hop_length,
-        win_length=args.win_length,
-        window=window
-    )
-
-    power = mx.square(mx.abs(X)).astype(power_dtype)
-
-    mel = mx.matmul(args._filterbanks.astype(power_dtype), power.T)
-    mel = mx.log(mel + 1e-5)
-
-    if args.normalize == "per_feature":
-        mel = (mel - mx.mean(mel, 1, keepdims=True)) / (mx.std(mel, 1, keepdims=True) + 1e-5)
-    else:
-        mel = (mel - mx.mean(mel)) / (mx.std(mel) + 1e-5)
-
-    mel = mx.expand_dims(mel.T, 0)
-    return mel.astype(power_dtype)
-
-
-def transcribe_long_audio(
-        model,
-        path,
-        *,
-        segment_sec: float = 30.0,
-        overlap_sec: float = 0.5,
-        dedupe_gap: float = 0.30,
-        dtype=mx.bfloat16
-) -> AlignedResult:
-    sr = model.preprocessor_config.sample_rate
-    seg = int(segment_sec * sr)
-    hop = int((segment_sec - overlap_sec) * sr)
-
-    # shrink FFT and rebuild filterbank once
-    if model.preprocessor_config.n_fft > 1024:
-        model.preprocessor_config.n_fft = 1024
-        import librosa
-        model.preprocessor_config._filterbanks = mx.array(
-            librosa.filters.mel(
-                sr=sr, n_fft=1024,
-                n_mels=model.preprocessor_config.features,
-                fmin=0, fmax=None, norm="slaney"),
-            dtype=mx.float32)
-
-    audio = load_audio(Path(path), sr, dtype)
-    n_samples = len(audio)
-
-    global_tokens: list[AlignedToken] = []
-
-    for start in range(0, n_samples, hop):
-        end = min(start + seg, n_samples)
-        snippet = audio[start:end]
-        if not len(snippet):
-            break
-
-        mel = get_logmel_fp16(snippet, model.preprocessor_config)
-        seg_res = model.generate(mel)[0]
-
-        offset = start / sr
-        for tok in _tokens_from_result(seg_res):
-            tok.start += offset
-            global_tokens.append(tok)
-
-        _clear_mlx_cache()
-
-    global_tokens.sort(key=lambda t: t.start)
-    deduped = []
-    for tok in global_tokens:
-        if (not deduped or
-                tok.text != deduped[-1].text or
-                tok.start - deduped[-1].start >= dedupe_gap):
-            deduped.append(tok)
-
-    sentences = tokens_to_sentences(deduped)
-    return sentences_to_result(sentences)
-
-
-def _tokens_from_result(res) -> list[AlignedToken]:
-    if hasattr(res, "tokens"):
-        return res.tokens
-    toks = []
-    for s in getattr(res, "sentences", []):
-        toks.extend(getattr(s, "tokens", []))
-    return toks
-
-
-def _clear_mlx_cache():
-    if hasattr(mx, "clear_cache"):
-        mx.clear_cache()
-    else:
-        try:
-            mx.metal.clear_cache()
-        except AttributeError:
-            pass
