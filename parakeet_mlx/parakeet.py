@@ -94,6 +94,7 @@ class ParakeetTDT(BaseParakeet):
             mel = mx.expand_dims(mel, 0)
 
         batch_features, lengths = self.encoder(mel)
+        mx.eval(batch_features, lengths)
 
         results = []
         for b in range(batch_size):

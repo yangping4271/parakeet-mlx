@@ -275,7 +275,7 @@ def transcribe(
                 )
 
             try:
-                result: AlignedResult = loaded_model.transcribe(str(audio_path))
+                result: AlignedResult = loaded_model.transcribe(audio_path)
 
                 base_filename = audio_path.stem
                 template_vars = {
