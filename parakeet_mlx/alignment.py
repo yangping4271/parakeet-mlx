@@ -45,7 +45,14 @@ def tokens_to_sentences(tokens: list[AlignedToken]) -> list[AlignedSentence]:
         current_tokens.append(token)
 
         # hacky, will fix
-        if "." in token.text or "!" in token.text or "?" in token.text:  # type: ignore
+        if (
+            "." in token.text
+            or "!" in token.text
+            or "?" in token.text
+            or "。" in token.text
+            or "？" in token.text
+            or "！" in token.text
+        ):  # type: ignore
             sentence_text = "".join(t.text for t in current_tokens)
             sentence = AlignedSentence(text=sentence_text, tokens=current_tokens)
             sentences.append(sentence)
