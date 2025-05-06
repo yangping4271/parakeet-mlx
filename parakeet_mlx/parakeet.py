@@ -13,7 +13,7 @@ from parakeet_mlx.alignment import (
 )
 from parakeet_mlx.audio import PreprocessArgs, get_logmel, load_audio
 from parakeet_mlx.conformer import Conformer, ConformerArgs
-from parakeet_mlx.ctc import AuxCTCArgs, ConvASRDecoder
+from parakeet_mlx.ctc import AuxCTCArgs, ConvASRDecoder, ConvASRDecoderArgs
 from parakeet_mlx.rnnt import JointArgs, JointNetwork, PredictArgs, PredictNetwork
 
 
@@ -26,6 +26,11 @@ class TDTDecodingArgs:
 
 @dataclass
 class RNNTDecodingArgs:
+    greedy: dict | None
+
+
+@dataclass
+class CTCDecodingArgs:
     greedy: dict | None
 
 
@@ -45,6 +50,14 @@ class ParakeetRNNTArgs:
     decoder: PredictArgs
     joint: JointArgs
     decoding: RNNTDecodingArgs
+
+
+@dataclass
+class ParakeetCTCArgs:
+    preprocessor: PreprocessArgs
+    encoder: ConformerArgs
+    decoder: ConvASRDecoderArgs
+    decoding: CTCDecodingArgs
 
 
 @dataclass
@@ -278,6 +291,119 @@ class ParakeetRNNT(BaseParakeet):
                 else:
                     time += 1
                     new_symbols = 0
+
+            result = sentences_to_result(tokens_to_sentences(hypothesis))
+            results.append(result)
+
+        return results
+
+
+class ParakeetCTC(BaseParakeet):
+    """MLX Implementation of Parakeet-CTC Model"""
+
+    def __init__(self, args: ParakeetCTCArgs):
+        super().__init__(args.preprocessor)
+
+        self.encoder_config = args.encoder
+
+        self.vocabulary = args.decoder.vocabulary
+
+        self.encoder = Conformer(args.encoder)
+        self.decoder = ConvASRDecoder(args.decoder)
+
+    def generate(self, mel: mx.array) -> list[AlignedResult]:
+        """
+        Generate with CTC decoding for the Parakeet model, handling batches and single input. Uses greedy decoding.
+        mel: [batch, sequence, mel_dim] or [sequence, mel_dim]
+        """
+        batch_size: int = mel.shape[0]
+        if len(mel.shape) == 2:
+            batch_size = 1
+            mel = mx.expand_dims(mel, 0)
+
+        batch_features, lengths = self.encoder(mel)
+        logits = self.decoder(batch_features)
+        mx.eval(logits, lengths)
+
+        results = []
+        for b in range(batch_size):
+            features_len = int(lengths[b])
+            predictions = logits[b, :features_len]
+            best_tokens = mx.argmax(predictions, axis=1)
+
+            hypothesis = []
+            token_boundaries = []
+            prev_token = -1
+
+            for t, token_id in enumerate(best_tokens):
+                token_idx = int(token_id)
+
+                if token_idx == len(self.vocabulary):
+                    continue
+
+                if token_idx == prev_token:
+                    continue
+
+                if prev_token != -1:
+                    token_start_time = (
+                        token_boundaries[-1][0]
+                        * self.encoder_config.subsampling_factor
+                        / self.preprocessor_config.sample_rate
+                        * self.preprocessor_config.hop_length
+                    )
+
+                    token_end_time = (
+                        t
+                        * self.encoder_config.subsampling_factor
+                        / self.preprocessor_config.sample_rate
+                        * self.preprocessor_config.hop_length
+                    )
+
+                    token_duration = token_end_time - token_start_time
+
+                    hypothesis.append(
+                        AlignedToken(
+                            prev_token,
+                            start=token_start_time,
+                            duration=token_duration,
+                            text=tokenizer.decode([prev_token], self.vocabulary),
+                        )
+                    )
+
+                token_boundaries.append((t, None))
+                prev_token = token_idx
+
+            if prev_token != -1:
+                last_non_blank = features_len - 1
+                for t in range(features_len - 1, token_boundaries[-1][0], -1):
+                    if int(best_tokens[t]) != len(self.vocabulary):
+                        last_non_blank = t
+                        break
+
+                token_start_time = (
+                    token_boundaries[-1][0]
+                    * self.encoder_config.subsampling_factor
+                    / self.preprocessor_config.sample_rate
+                    * self.preprocessor_config.hop_length
+                )
+
+                token_end_time = (
+                    (last_non_blank + 1)
+                    * self.encoder_config.subsampling_factor
+                    / self.preprocessor_config.sample_rate
+                    * self.preprocessor_config.hop_length
+                )
+
+                token_duration = token_end_time - token_start_time
+
+                hypothesis.append(
+                    AlignedToken(
+                        prev_token,
+                        start=token_start_time,
+                        duration=token_duration,
+                        text=tokenizer.decode([prev_token], self.vocabulary),
+                    )
+                )
 
             result = sentences_to_result(tokens_to_sentences(hypothesis))
             results.append(result)
