@@ -2,8 +2,6 @@
 
 An implementation of the Parakeet models - Nvidia's ASR(Automatic Speech Recognition) models - for Apple Silicon using MLX.
 
-> Currently only for Parakeet TDT models. Support for additional Parakeet model variants is planned.
-
 ## Installation
 
 Using [uv](https://docs.astral.sh/uv/) - recommended way:
