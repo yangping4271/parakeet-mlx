@@ -181,7 +181,7 @@ def transcribe(
     ],
     model: Annotated[
         str, typer.Option(help="Hugging Face repository of model to use")
-    ] = "senstella/parakeet-tdt-0.6b-v2-mlx",
+    ] = "mlx-community/parakeet-tdt-0.6b-v2",
     output_dir: Annotated[
         Path, typer.Option(help="Directory to save transcriptions")
     ] = Path("."),

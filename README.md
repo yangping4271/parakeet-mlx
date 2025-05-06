@@ -36,7 +36,7 @@ parakeet-mlx <audio_files> [OPTIONS]
 
 ## Options
 
-- `--model` (default: `senstella/parakeet-tdt-0.6b-v2-mlx`)
+- `--model` (default: `mlx-community/parakeet-tdt-0.6b-v2`)
   - Hugging Face repository of the model to use
 
 - `--output-dir` (default: current directory)
@@ -78,7 +78,7 @@ Transcribe a file:
 ```py
 from parakeet_mlx import from_pretrained
 
-model = from_pretrained("senstella/parakeet-tdt-0.6b-v2-mlx")
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v2")
 
 result = model.transcribe("audio_file.wav")
 
@@ -90,7 +90,7 @@ Check timestamps:
 ```py
 from parakeet_mlx import from_pretrained
 
-model = from_pretrained("senstella/parakeet-tdt-0.6b-v2-mlx")
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v2")
 
 result = model.transcribe("audio_file.wav")
 
