@@ -138,7 +138,7 @@ alignments = model.generate(mel)
 - [X] Add CLI for better usability
 - [ ] Streaming input (Although RTFx is MUCH higher than 1 currently - it should be much sufficient to stream with current state)
 - [ ] Compiling for RNNT decoder
-- [ ] Add support for other Parakeet varients
+- [X] Add support for other Parakeet varients
 - [ ] Remove librosa dependency
 
 

@@ -8,6 +8,8 @@ from mlx.utils import tree_flatten, tree_unflatten
 
 from parakeet_mlx.parakeet import (
     BaseParakeet,
+    ParakeetCTC,
+    ParakeetCTCArgs,
     ParakeetRNNT,
     ParakeetRNNTArgs,
     ParakeetTDT,
@@ -40,6 +42,12 @@ def from_config(config: dict) -> BaseParakeet:
     ):
         cfg = from_dict(ParakeetRNNTArgs, config)
         model = ParakeetRNNT(cfg)
+    elif (
+        config.get("target")
+        == "nemo.collections.asr.models.ctc_bpe_models.EncDecCTCModelBPE"
+    ):
+        cfg = from_dict(ParakeetCTCArgs, config)
+        model = ParakeetCTC(cfg)
     else:
         raise ValueError("Model is not supported yet!")
 
