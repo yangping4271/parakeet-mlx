@@ -54,7 +54,7 @@ class BaseParakeet(nn.Module):
         raise NotImplementedError
 
     def transcribe(
-        self, path: Path | str, dtype: mx.Dtype = mx.bfloat16
+        self, path: Path | str, *, dtype: mx.Dtype = mx.bfloat16
     ) -> AlignedResult:
         """Transcribe an audio file, path must be provided."""
         audio = load_audio(Path(path), self.preprocessor_config.sample_rate, dtype)

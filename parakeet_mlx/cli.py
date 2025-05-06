@@ -213,7 +213,7 @@ def transcribe(
         print(f"Loading model: [bold cyan]{model}[/bold cyan]...")
 
     try:
-        loaded_model = from_pretrained(model, bfloat16 if not fp32 else float32)
+        loaded_model = from_pretrained(model, dtype=bfloat16 if not fp32 else float32)
         if verbose:
             print("[green]Model loaded successfully.[/green]")
     except Exception as e:
@@ -276,7 +276,7 @@ def transcribe(
 
             try:
                 result: AlignedResult = loaded_model.transcribe(
-                    audio_path, bfloat16 if not fp32 else float32
+                    audio_path, dtype=bfloat16 if not fp32 else float32
                 )
 
                 if verbose:

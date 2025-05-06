@@ -39,7 +39,9 @@ def from_config(config: dict) -> BaseParakeet:
     return model
 
 
-def from_pretrained(hf_id_or_path: str, dtype: mx.Dtype = mx.bfloat16) -> BaseParakeet:
+def from_pretrained(
+    hf_id_or_path: str, *, dtype: mx.Dtype = mx.bfloat16
+) -> BaseParakeet:
     """Loads model from Hugging Face or local directory"""
     try:
         config = json.load(open(hf_hub_download(hf_id_or_path, "config.json"), "r"))
