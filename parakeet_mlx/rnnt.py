@@ -29,9 +29,9 @@ class PredictArgs:
 @dataclass
 class JointArgs:
     num_classes: int
-    num_extra_outputs: int
     vocabulary: list[str]
     jointnet: JointNetworkArgs
+    num_extra_outputs: int = 0
 
 
 class LSTM(nn.Module):

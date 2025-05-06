@@ -25,12 +25,26 @@ class TDTDecodingArgs:
 
 
 @dataclass
+class RNNTDecodingArgs:
+    greedy: dict | None
+
+
+@dataclass
 class ParakeetTDTArgs:
     preprocessor: PreprocessArgs
     encoder: ConformerArgs
     decoder: PredictArgs
     joint: JointArgs
     decoding: TDTDecodingArgs
+
+
+@dataclass
+class ParakeetRNNTArgs:
+    preprocessor: PreprocessArgs
+    encoder: ConformerArgs
+    decoder: PredictArgs
+    joint: JointArgs
+    decoding: RNNTDecodingArgs
 
 
 @dataclass
@@ -165,6 +179,105 @@ class ParakeetTDT(BaseParakeet):
                     if self.max_symbols is not None and self.max_symbols <= new_symbols:
                         time += 1
                         new_symbols = 0
+
+            result = sentences_to_result(tokens_to_sentences(hypothesis))
+            results.append(result)
+
+        return results
+
+
+class ParakeetRNNT(BaseParakeet):
+    """MLX Implementation of Parakeet-RNNT Model"""
+
+    def __init__(self, args: ParakeetRNNTArgs):
+        super().__init__(args.preprocessor)
+
+        self.encoder_config = args.encoder
+
+        self.vocabulary = args.joint.vocabulary
+        self.max_symbols: int | None = (
+            args.decoding.greedy.get("max_symbols", None)
+            if args.decoding.greedy
+            else None
+        )
+
+        self.encoder = Conformer(args.encoder)
+        self.decoder = PredictNetwork(args.decoder)
+        self.joint = JointNetwork(args.joint)
+
+    def generate(self, mel: mx.array) -> list[AlignedResult]:
+        """
+        Generate with skip token logic for the Parakeet model, handling batches and single input. Uses greedy decoding.
+        mel: [batch, sequence, mel_dim] or [sequence, mel_dim]
+        """
+        batch_size: int = mel.shape[0]
+        if len(mel.shape) == 2:
+            batch_size = 1
+            mel = mx.expand_dims(mel, 0)
+
+        batch_features, lengths = self.encoder(mel)
+        mx.eval(batch_features, lengths)
+
+        results = []
+        for b in range(batch_size):
+            features = batch_features[b : b + 1]
+            max_length = int(lengths[b])
+
+            last_token = len(self.vocabulary)
+            hypothesis = []
+
+            time = 0
+            new_symbols = 0
+            decoder_hidden = None
+
+            while time < max_length:
+                feature = features[:, time : time + 1]
+
+                current_token = (
+                    mx.array([[last_token]], dtype=mx.int32)
+                    if last_token != len(self.vocabulary)
+                    else None
+                )
+                decoder_output, (hidden, cell) = self.decoder(
+                    current_token, decoder_hidden
+                )
+
+                # cast
+                decoder_output = decoder_output.astype(feature.dtype)
+                proposed_decoder_hidden = (
+                    hidden.astype(feature.dtype),
+                    cell.astype(feature.dtype),
+                )
+
+                joint_output = self.joint(feature, decoder_output)
+
+                pred_token = mx.argmax(joint_output)
+
+                if pred_token != len(self.vocabulary):
+                    hypothesis.append(
+                        AlignedToken(
+                            int(pred_token),
+                            start=time
+                            * self.encoder_config.subsampling_factor
+                            / self.preprocessor_config.sample_rate
+                            * self.preprocessor_config.hop_length,  # hop
+                            duration=1
+                            * self.encoder_config.subsampling_factor
+                            / self.preprocessor_config.sample_rate
+                            * self.preprocessor_config.hop_length,  # hop
+                            text=tokenizer.decode([int(pred_token)], self.vocabulary),
+                        )
+                    )
+                    last_token = int(pred_token)
+                    decoder_hidden = proposed_decoder_hidden
+
+                    new_symbols += 1
+                    if self.max_symbols is not None and self.max_symbols <= new_symbols:
+                        time += 1
+                        new_symbols = 0
+                else:
+                    time += 1
+                    new_symbols = 0
 
             result = sentences_to_result(tokens_to_sentences(hypothesis))
             results.append(result)
