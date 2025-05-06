@@ -275,7 +275,15 @@ def transcribe(
                 )
 
             try:
-                result: AlignedResult = loaded_model.transcribe(audio_path)
+                result: AlignedResult = loaded_model.transcribe(
+                    audio_path, bfloat16 if not fp32 else float32
+                )
+
+                if verbose:
+                    for sentence in result.sentences:
+                        start, end, text = sentence.start, sentence.end, sentence.text
+                        line = f"[blue][{format_timestamp(start)} --> {format_timestamp(end)}][/blue] {text.strip()}"
+                        print(line)
 
                 base_filename = audio_path.stem
                 template_vars = {
@@ -297,7 +305,7 @@ def transcribe(
                             f.write(output_content)
                         if verbose:
                             print(
-                                f"  [green]Saved {fmt.upper()}:[/green] {output_filepath.relative_to(Path.cwd())}"
+                                f"[green]Saved {fmt.upper()}:[/green] {output_filepath.absolute()}"
                             )
                     except Exception as e:
                         print(

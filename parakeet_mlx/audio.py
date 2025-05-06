@@ -45,7 +45,9 @@ class PreprocessArgs:
         )
 
 
-def load_audio(filename: Path, sampling_rate: int) -> mx.array:
+def load_audio(
+    filename: Path, sampling_rate: int, dtype: mx.Dtype = mx.bfloat16
+) -> mx.array:
     signal, original_sampling_rate = audiofile.read(str(filename), always_2d=True)
 
     signal = audresample.resample(signal, original_sampling_rate, sampling_rate)
@@ -57,7 +59,7 @@ def load_audio(filename: Path, sampling_rate: int) -> mx.array:
     else:
         signal = signal.squeeze(0)
 
-    return signal  # (audio_length, )
+    return signal.astype(dtype)  # (audio_length, )
 
 
 # thanks to https://github.com/ml-explore/mlx-examples/blob/main/whisper/mlx_whisper/audio.py

@@ -53,9 +53,11 @@ class BaseParakeet(nn.Module):
         """
         raise NotImplementedError
 
-    def transcribe(self, path: Path | str) -> AlignedResult:
+    def transcribe(
+        self, path: Path | str, dtype: mx.Dtype = mx.bfloat16
+    ) -> AlignedResult:
         """Transcribe an audio file, path must be provided."""
-        audio = load_audio(Path(path), self.preprocessor_config.sample_rate)
+        audio = load_audio(Path(path), self.preprocessor_config.sample_rate, dtype)
         mel = get_logmel(audio, self.preprocessor_config)
 
         return self.generate(mel)[0]
@@ -114,12 +116,19 @@ class ParakeetTDT(BaseParakeet):
                 feature = features[:, time : time + 1]
 
                 current_token = (
-                    mx.array([[last_token]])
+                    mx.array([[last_token]], dtype=mx.int32)
                     if last_token != len(self.vocabulary)
                     else None
                 )
-                decoder_output, proposed_decoder_hidden = self.decoder(
+                decoder_output, (hidden, cell) = self.decoder(
                     current_token, decoder_hidden
+                )
+
+                # cast
+                decoder_output = decoder_output.astype(feature.dtype)
+                proposed_decoder_hidden = (
+                    hidden.astype(feature.dtype),
+                    cell.astype(feature.dtype),
                 )
 
                 joint_output = self.joint(feature, decoder_output)
