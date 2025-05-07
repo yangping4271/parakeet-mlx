@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable, Optional
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -8,6 +9,7 @@ from parakeet_mlx import tokenizer
 from parakeet_mlx.alignment import (
     AlignedResult,
     AlignedToken,
+    merge_longest_common_subsequence,
     sentences_to_result,
     tokens_to_sentences,
 )
@@ -81,13 +83,75 @@ class BaseParakeet(nn.Module):
         raise NotImplementedError
 
     def transcribe(
-        self, path: Path | str, *, dtype: mx.Dtype = mx.bfloat16
+        self,
+        path: Path | str,
+        *,
+        dtype: mx.Dtype = mx.bfloat16,
+        chunk_duration: Optional[float] = None,
+        overlap_duration: float = 5.0,
+        chunk_callback: Optional[Callable] = None,
     ) -> AlignedResult:
-        """Transcribe an audio file, path must be provided."""
-        audio = load_audio(Path(path), self.preprocessor_config.sample_rate, dtype)
-        mel = get_logmel(audio, self.preprocessor_config)
+        """
+        Transcribe an audio file, with optional chunking for long files.
 
-        return self.generate(mel)[0]
+        Args:
+            path: Path to the audio file
+            dtype: Data type for processing
+            chunk_duration: If provided, splits audio into chunks of this length for processing
+            overlap_duration: Overlap between chunks (only used when chunking)
+            chunk_callback: A function to call back when chunk is processed, called with (current_position, total_position)
+
+        Returns:
+            Transcription result with aligned tokens and sentences
+        """
+        audio_path = Path(path)
+        audio_data = load_audio(audio_path, self.preprocessor_config.sample_rate, dtype)
+
+        if chunk_duration is None:
+            mel = get_logmel(audio_data, self.preprocessor_config)
+            return self.generate(mel)[0]
+
+        audio_length_seconds = len(audio_data) / self.preprocessor_config.sample_rate
+
+        if audio_length_seconds <= chunk_duration:
+            mel = get_logmel(audio_data, self.preprocessor_config)
+            return self.generate(mel)[0]
+
+        chunk_samples = int(chunk_duration * self.preprocessor_config.sample_rate)
+        overlap_samples = int(overlap_duration * self.preprocessor_config.sample_rate)
+
+        all_tokens = []
+
+        for start in range(0, len(audio_data), chunk_samples - overlap_samples):
+            end = min(start + chunk_samples, len(audio_data))
+
+            if chunk_callback is not None:
+                chunk_callback(end, len(audio_data))
+
+            chunk_audio = audio_data[start:end]
+            chunk_mel = get_logmel(chunk_audio, self.preprocessor_config)
+
+            chunk_result = self.generate(chunk_mel)[0]
+
+            chunk_offset = start / self.preprocessor_config.sample_rate
+            for sentence in chunk_result.sentences:
+                for token in sentence.tokens:
+                    token.start += chunk_offset
+                    token.end = token.start + token.duration
+
+            chunk_tokens = []
+            for sentence in chunk_result.sentences:
+                chunk_tokens.extend(sentence.tokens)
+
+            if all_tokens:
+                all_tokens = merge_longest_common_subsequence(
+                    all_tokens, chunk_tokens, overlap_duration=overlap_duration
+                )
+            else:
+                all_tokens = chunk_tokens
+
+        result = sentences_to_result(tokens_to_sentences(all_tokens))
+        return result
 
 
 class ParakeetTDT(BaseParakeet):

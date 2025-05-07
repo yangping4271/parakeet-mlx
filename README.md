@@ -96,6 +96,18 @@ print(result.sentences)
 # [AlignedSentence(text="Hello World.", start=1.01, end=2.04, duration=1.03, tokens=[...])]
 ```
 
+Do chunking:
+
+```py
+from parakeet_mlx import from_pretrained
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v2")
+
+result = model.transcribe("audio_file.wav", chunk_duration=60 * 2.0, overlap_duration=5.0)
+
+print(result.sentences)
+```
+
 ## Timestamp Result
 
 - `AlignedResult`: Top-level result containing the full text and sentences

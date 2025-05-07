@@ -198,6 +198,15 @@ def transcribe(
         bool,
         typer.Option(help="Underline/timestamp each word as it is spoken in srt/vtt"),
     ] = False,
+    chunk_duration: Annotated[
+        float,
+        typer.Option(
+            help="Chunking duration in seconds for long audio, 0 to disable chunking."
+        ),
+    ] = 60 * 2,
+    overlap_duration: Annotated[
+        float, typer.Option(help="Overlap duration in seconds if using chunking")
+    ] = 5,
     verbose: Annotated[
         bool,
         typer.Option("--verbose", "-v", help="Print out process and debug messages"),
@@ -276,7 +285,13 @@ def transcribe(
 
             try:
                 result: AlignedResult = loaded_model.transcribe(
-                    audio_path, dtype=bfloat16 if not fp32 else float32
+                    audio_path,
+                    dtype=bfloat16 if not fp32 else float32,
+                    chunk_duration=chunk_duration if chunk_duration != 0 else None,
+                    overlap_duration=overlap_duration,
+                    chunk_callback=lambda current, full: progress.update(
+                        task, total=total_files * full, completed=full * i + current
+                    ),
                 )
 
                 if verbose:
@@ -315,7 +330,7 @@ def transcribe(
             except Exception as e:
                 print(f"[bold red]Error transcribing file {audio_path}:[/bold red] {e}")
 
-            progress.update(task, advance=1)
+            progress.update(task, total=total_files, completed=i + 1)
 
     print(
         f"\n[bold green]Transcription complete.[/bold green] Outputs saved in '{output_dir.resolve()}'."
