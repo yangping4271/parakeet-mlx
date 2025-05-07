@@ -41,17 +41,20 @@ def tokens_to_sentences(tokens: list[AlignedToken]) -> list[AlignedSentence]:
     sentences = []
     current_tokens = []
 
-    for token in tokens:
+    for idx, token in enumerate(tokens):
         current_tokens.append(token)
 
         # hacky, will fix
         if (
-            "." in token.text
-            or "!" in token.text
+            "!" in token.text
             or "?" in token.text
             or "。" in token.text
             or "？" in token.text
             or "！" in token.text
+            or (
+                "." in token.text
+                and (idx == len(tokens) - 1 or " " in tokens[idx + 1].text)
+            )
         ):  # type: ignore
             sentence_text = "".join(t.text for t in current_tokens)
             sentence = AlignedSentence(text=sentence_text, tokens=current_tokens)
