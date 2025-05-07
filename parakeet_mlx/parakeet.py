@@ -88,7 +88,7 @@ class BaseParakeet(nn.Module):
         *,
         dtype: mx.Dtype = mx.bfloat16,
         chunk_duration: Optional[float] = None,
-        overlap_duration: float = 5.0,
+        overlap_duration: float = 15.0,
         chunk_callback: Optional[Callable] = None,
     ) -> AlignedResult:
         """

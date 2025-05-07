@@ -55,7 +55,7 @@ parakeet-mlx <audio_files> [OPTIONS]
 - `--chunk-duration` (default: 120 seconds)
   - Chunking duration in seconds for long audio, `0` to disable chunking
 
-- `--overlap-duration` (default: 5 seconds)
+- `--overlap-duration` (default: 15 seconds)
   - Overlap duration in seconds if using chunking
 
 - `--fp32` / `--bf16` (default: `bf16`)
@@ -109,7 +109,7 @@ from parakeet_mlx import from_pretrained
 
 model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v2")
 
-result = model.transcribe("audio_file.wav", chunk_duration=60 * 2.0, overlap_duration=5.0)
+result = model.transcribe("audio_file.wav", chunk_duration=60 * 2.0, overlap_duration=15.0)
 
 print(result.sentences)
 ```

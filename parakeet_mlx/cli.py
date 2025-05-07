@@ -206,7 +206,7 @@ def transcribe(
     ] = 60 * 2,
     overlap_duration: Annotated[
         float, typer.Option(help="Overlap duration in seconds if using chunking")
-    ] = 5,
+    ] = 15,
     verbose: Annotated[
         bool,
         typer.Option("--verbose", "-v", help="Print out process and debug messages"),
