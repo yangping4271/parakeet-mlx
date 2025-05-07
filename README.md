@@ -52,6 +52,12 @@ parakeet-mlx <audio_files> [OPTIONS]
 - `--verbose` / `-v` (default: False)
   - Print detailed progress information
 
+- `--chunk-duration` (default: 120 seconds)
+  - Chunking duration in seconds for long audio, `0` to disable chunking
+
+- `--overlap-duration` (default: 5 seconds)
+  - Overlap duration in seconds if using chunking
+
 - `--fp32` / `--bf16` (default: `bf16`)
   - Determinate the precision to use
 
