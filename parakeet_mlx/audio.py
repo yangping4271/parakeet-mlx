@@ -1,9 +1,9 @@
 import functools
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
+from subprocess import CalledProcessError, run
 
-import audiofile
-import audresample
 import librosa
 import mlx.core as mx
 import numpy as np
@@ -31,7 +31,7 @@ class PreprocessArgs:
         return int(self.window_stride * self.sample_rate)
 
     def __post_init__(self):
-        # slow slow slow. will remove librosa depedency later!
+        # only slow at first run, should be acceptable to most of users
         self._filterbanks = mx.array(
             librosa.filters.mel(
                 sr=self.sample_rate,
@@ -45,21 +45,33 @@ class PreprocessArgs:
         )
 
 
+# thanks to mlx-whisper too!
 def load_audio(
     filename: Path, sampling_rate: int, dtype: mx.Dtype = mx.bfloat16
 ) -> mx.array:
-    signal, original_sampling_rate = audiofile.read(str(filename), always_2d=True)
+    if shutil.which("ffmpeg") is None:
+        raise RuntimeError("FFmpeg is not installed or not in your PATH.")
 
-    signal = audresample.resample(signal, original_sampling_rate, sampling_rate)
+    cmd = ["ffmpeg", "-nostdin", "-i", str(filename)]
 
-    signal = mx.array(signal)
+    # fmt: off
+    cmd.extend(
+        [
+            "-threads", "0",
+            "-f", "s16le",
+            "-ac", "1",
+            "-acodec", "pcm_s16le",
+            "-ar", str(sampling_rate),
+            "-",
+        ]
+    )
+    # fmt: on
+    try:
+        out = run(cmd, capture_output=True, check=True).stdout
+    except CalledProcessError as e:
+        raise RuntimeError(f"Failed to load audio: {e.stderr.decode()}") from e
 
-    if signal.shape[0] >= 1:
-        signal = signal.mean(axis=0)
-    else:
-        signal = signal.squeeze(0)
-
-    return signal.astype(dtype)  # (audio_length, )
+    return mx.array(np.frombuffer(out, np.int16).flatten()).astype(mx.float32) / 32768.0
 
 
 # thanks to https://github.com/ml-explore/mlx-examples/blob/main/whisper/mlx_whisper/audio.py

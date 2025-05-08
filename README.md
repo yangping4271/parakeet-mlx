@@ -152,10 +152,10 @@ alignments = model.generate(mel)
 ## Todo
 
 - [X] Add CLI for better usability
-- [ ] Streaming input (Although RTFx is MUCH higher than 1 currently - it should be much sufficient to stream with current state)
-- [ ] Compiling for RNNT decoder
 - [X] Add support for other Parakeet varients
-- [ ] Remove librosa dependency
+- [ ] Streaming input (Although RTFx is MUCH higher than 1 currently - it should be much sufficient to stream with current state)
+- [ ] Option to enhance choosen words' accuracy
+- [ ] Chunking with continuous context (I think it might be able to achieve by preserving decoder state - just a speculation though)
 
 
 ## Acknowledgments
