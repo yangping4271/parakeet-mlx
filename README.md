@@ -4,6 +4,9 @@ An implementation of the Parakeet models - Nvidia's ASR(Automatic Speech Recogni
 
 ## Installation
 
+> [!NOTE]
+> Make sure you have `ffmpeg` installed on your system first, otherwise CLI won't work properly.
+
 Using [uv](https://docs.astral.sh/uv/) - recommended way:
 
 ```bash
