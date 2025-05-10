@@ -10,6 +10,7 @@ from parakeet_mlx.alignment import (
     AlignedResult,
     AlignedToken,
     merge_longest_common_subsequence,
+    merge_longest_contiguous,
     sentences_to_result,
     tokens_to_sentences,
 )
@@ -144,9 +145,14 @@ class BaseParakeet(nn.Module):
                 chunk_tokens.extend(sentence.tokens)
 
             if all_tokens:
-                all_tokens = merge_longest_common_subsequence(
-                    all_tokens, chunk_tokens, overlap_duration=overlap_duration
-                )
+                try:
+                    all_tokens = merge_longest_contiguous(
+                        all_tokens, chunk_tokens, overlap_duration=overlap_duration
+                    )
+                except RuntimeError:
+                    all_tokens = merge_longest_common_subsequence(
+                        all_tokens, chunk_tokens, overlap_duration=overlap_duration
+                    )
             else:
                 all_tokens = chunk_tokens
 
