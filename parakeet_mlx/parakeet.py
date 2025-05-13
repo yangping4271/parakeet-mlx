@@ -338,7 +338,7 @@ class ParakeetRNNT(BaseParakeet):
         B, S, *_ = features.shape
 
         if hidden_state is None:
-            hidden_state = list([(None, None)] * B)
+            hidden_state = list([None] * B)
 
         if lengths is None:
             lengths = mx.array([S] * B)
