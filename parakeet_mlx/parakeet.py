@@ -68,6 +68,12 @@ class ParakeetTDTCTCArgs(ParakeetTDTArgs):
     aux_ctc: AuxCTCArgs
 
 
+# API
+@dataclass
+class DecodingConfig:
+    decoding: str = "greedy"
+
+
 class BaseParakeet(nn.Module):
     """Base parakeet model for interface purpose"""
 
@@ -182,91 +188,118 @@ class ParakeetTDT(BaseParakeet):
         self.decoder = PredictNetwork(args.decoder)
         self.joint = JointNetwork(args.joint)
 
-    def generate(self, mel: mx.array) -> list[AlignedResult]:
-        """
-        Generate with skip token logic for the Parakeet model, handling batches and single input. Uses greedy decoding.
-        mel: [batch, sequence, mel_dim] or [sequence, mel_dim]
-        """
-        batch_size: int = mel.shape[0]
-        if len(mel.shape) == 2:
-            batch_size = 1
-            mel = mx.expand_dims(mel, 0)
+    def decode(
+        self,
+        features: mx.array,
+        lengths: Optional[mx.array] = None,
+        last_token: Optional[list[Optional[int]]] = None,
+        hidden_state: Optional[list[Optional[tuple[mx.array, mx.array]]]] = None,
+        *,
+        config: DecodingConfig = DecodingConfig(),
+    ) -> tuple[list[list[AlignedToken]], list[Optional[tuple[mx.array, mx.array]]]]:
+        """Run TDT decoder with features, optional length and decoder state. Outputs list[list[AlignedToken]] and updated hidden state"""
+        assert config.decoding == "greedy", (
+            "Only greedy decoding is supported for TDT decoder now"
+        )
 
-        batch_features, lengths = self.encoder(mel)
-        mx.eval(batch_features, lengths)
+        B, S, *_ = features.shape
+
+        if hidden_state is None:
+            hidden_state = list([None] * B)
+
+        if lengths is None:
+            lengths = mx.array([S] * B)
+
+        if last_token is None:
+            last_token = list([None] * B)
 
         results = []
-        for b in range(batch_size):
-            features = batch_features[b : b + 1]
-            max_length = int(lengths[b])
-
-            last_token = len(
-                self.vocabulary
-            )  # In TDT, space token is always len(vocab)
+        for batch in range(B):
             hypothesis = []
 
-            time = 0
+            feature = features[batch : batch + 1]
+            length = int(lengths[batch])
+
+            step = 0
             new_symbols = 0
-            decoder_hidden = None
 
-            while time < max_length:
-                feature = features[:, time : time + 1]
-
-                current_token = (
-                    mx.array([[last_token]], dtype=mx.int32)
-                    if last_token != len(self.vocabulary)
-                    else None
+            while step < length:
+                # decoder pass
+                decoder_out, (hidden, cell) = self.decoder(
+                    mx.array([[last_token[batch]]])
+                    if last_token[batch] is not None
+                    else None,
+                    hidden_state[batch],
                 )
-                decoder_output, (hidden, cell) = self.decoder(
-                    current_token, decoder_hidden
-                )
-
-                # cast
-                decoder_output = decoder_output.astype(feature.dtype)
-                proposed_decoder_hidden = (
+                decoder_out = decoder_out.astype(feature.dtype)
+                decoder_hidden = (
                     hidden.astype(feature.dtype),
                     cell.astype(feature.dtype),
                 )
 
-                joint_output = self.joint(feature, decoder_output)
+                # joint pass
+                joint_out = self.joint(feature[:, step : step + 1], decoder_out)
 
-                pred_token = mx.argmax(
-                    joint_output[0, 0, :, : len(self.vocabulary) + 1]
+                # sampling
+                pred_token = int(
+                    mx.argmax(joint_out[0, 0, :, : len(self.vocabulary) + 1])
                 )
-                decision = mx.argmax(joint_output[0, 0, :, len(self.vocabulary) + 1 :])
+                decision = int(
+                    mx.argmax(joint_out[0, 0, :, len(self.vocabulary) + 1 :])
+                )
 
+                # tdt decoding rule
                 if pred_token != len(self.vocabulary):
                     hypothesis.append(
                         AlignedToken(
                             int(pred_token),
-                            start=time
+                            start=step
                             * self.encoder_config.subsampling_factor
                             / self.preprocessor_config.sample_rate
                             * self.preprocessor_config.hop_length,  # hop
-                            duration=self.durations[int(decision)]
+                            duration=self.durations[decision]
                             * self.encoder_config.subsampling_factor
                             / self.preprocessor_config.sample_rate
                             * self.preprocessor_config.hop_length,  # hop
-                            text=tokenizer.decode([int(pred_token)], self.vocabulary),
+                            text=tokenizer.decode([pred_token], self.vocabulary),
                         )
                     )
-                    last_token = int(pred_token)
-                    decoder_hidden = proposed_decoder_hidden
+                    last_token[batch] = pred_token
+                    hidden_state[batch] = decoder_hidden
 
-                time += self.durations[int(decision)]
+                step += self.durations[int(decision)]
+
+                # prevent stucking rule
                 new_symbols += 1
 
                 if self.durations[int(decision)] != 0:
                     new_symbols = 0
                 else:
                     if self.max_symbols is not None and self.max_symbols <= new_symbols:
-                        time += 1
+                        step += 1
                         new_symbols = 0
 
-            result = sentences_to_result(tokens_to_sentences(hypothesis))
-            results.append(result)
+            results.append(hypothesis)
 
-        return results
+        return results, hidden_state
+
+    def generate(self, mel: mx.array) -> list[AlignedResult]:
+        """
+        Generate with TDT decoder for the Parakeet model, handling batches and single input. Uses greedy decoding.
+        mel: [batch, sequence, mel_dim] or [sequence, mel_dim]
+        """
+        if len(mel.shape) == 2:
+            mel = mx.expand_dims(mel, 0)
+
+        features, lengths = self.encoder(mel)
+        mx.eval(features, lengths)
+
+        result, _ = self.decode(features, lengths)
+
+        return [
+            sentences_to_result(tokens_to_sentences(hypothesis))
+            for hypothesis in result
+        ]
 
 
 class ParakeetRNNT(BaseParakeet):
@@ -288,59 +321,67 @@ class ParakeetRNNT(BaseParakeet):
         self.decoder = PredictNetwork(args.decoder)
         self.joint = JointNetwork(args.joint)
 
-    def generate(self, mel: mx.array) -> list[AlignedResult]:
-        """
-        Generate with skip token logic for the Parakeet model, handling batches and single input. Uses greedy decoding.
-        mel: [batch, sequence, mel_dim] or [sequence, mel_dim]
-        """
-        batch_size: int = mel.shape[0]
-        if len(mel.shape) == 2:
-            batch_size = 1
-            mel = mx.expand_dims(mel, 0)
+    def decode(
+        self,
+        features: mx.array,
+        lengths: Optional[mx.array] = None,
+        last_token: Optional[list[Optional[int]]] = None,
+        hidden_state: Optional[list[Optional[tuple[mx.array, mx.array]]]] = None,
+        *,
+        config: DecodingConfig = DecodingConfig(),
+    ) -> tuple[list[list[AlignedToken]], list[Optional[tuple[mx.array, mx.array]]]]:
+        """Run TDT decoder with features, optional length and decoder state. Outputs list[list[AlignedToken]] and updated hidden state"""
+        assert config.decoding == "greedy", (
+            "Only greedy decoding is supported for RNNT decoder now"
+        )
 
-        batch_features, lengths = self.encoder(mel)
-        mx.eval(batch_features, lengths)
+        B, S, *_ = features.shape
+
+        if hidden_state is None:
+            hidden_state = list([(None, None)] * B)
+
+        if lengths is None:
+            lengths = mx.array([S] * B)
+
+        if last_token is None:
+            last_token = list([None] * B)
 
         results = []
-        for b in range(batch_size):
-            features = batch_features[b : b + 1]
-            max_length = int(lengths[b])
-
-            last_token = len(self.vocabulary)
+        for batch in range(B):
             hypothesis = []
 
-            time = 0
+            feature = features[batch : batch + 1]
+            length = int(lengths[batch])
+
+            step = 0
             new_symbols = 0
-            decoder_hidden = None
 
-            while time < max_length:
-                feature = features[:, time : time + 1]
-
-                current_token = (
-                    mx.array([[last_token]], dtype=mx.int32)
-                    if last_token != len(self.vocabulary)
-                    else None
+            while step < length:
+                # decoder pass
+                decoder_out, (hidden, cell) = self.decoder(
+                    mx.array([[last_token[batch]]])
+                    if last_token[batch] is not None
+                    else None,
+                    hidden_state[batch],
                 )
-                decoder_output, (hidden, cell) = self.decoder(
-                    current_token, decoder_hidden
-                )
-
-                # cast
-                decoder_output = decoder_output.astype(feature.dtype)
-                proposed_decoder_hidden = (
+                decoder_out = decoder_out.astype(feature.dtype)
+                decoder_hidden = (
                     hidden.astype(feature.dtype),
                     cell.astype(feature.dtype),
                 )
 
-                joint_output = self.joint(feature, decoder_output)
+                # joint pass
+                joint_out = self.joint(feature[:, step : step + 1], decoder_out)
 
-                pred_token = mx.argmax(joint_output)
+                # sampling
+                pred_token = int(mx.argmax(joint_out[0, 0]))
 
+                # rnnt decoding rule
                 if pred_token != len(self.vocabulary):
                     hypothesis.append(
                         AlignedToken(
                             int(pred_token),
-                            start=time
+                            start=step
                             * self.encoder_config.subsampling_factor
                             / self.preprocessor_config.sample_rate
                             * self.preprocessor_config.hop_length,  # hop
@@ -348,24 +389,42 @@ class ParakeetRNNT(BaseParakeet):
                             * self.encoder_config.subsampling_factor
                             / self.preprocessor_config.sample_rate
                             * self.preprocessor_config.hop_length,  # hop
-                            text=tokenizer.decode([int(pred_token)], self.vocabulary),
+                            text=tokenizer.decode([pred_token], self.vocabulary),
                         )
                     )
-                    last_token = int(pred_token)
-                    decoder_hidden = proposed_decoder_hidden
+                    last_token[batch] = pred_token
+                    hidden_state[batch] = decoder_hidden
 
+                    # prevent stucking
                     new_symbols += 1
                     if self.max_symbols is not None and self.max_symbols <= new_symbols:
-                        time += 1
+                        step += 1
                         new_symbols = 0
                 else:
-                    time += 1
+                    step += 1
                     new_symbols = 0
 
-            result = sentences_to_result(tokens_to_sentences(hypothesis))
-            results.append(result)
+            results.append(hypothesis)
 
-        return results
+        return results, hidden_state
+
+    def generate(self, mel: mx.array) -> list[AlignedResult]:
+        """
+        Generate with RNNT decoder for the Parakeet model, handling batches and single input. Uses greedy decoding.
+        mel: [batch, sequence, mel_dim] or [sequence, mel_dim]
+        """
+        if len(mel.shape) == 2:
+            mel = mx.expand_dims(mel, 0)
+
+        features, lengths = self.encoder(mel)
+        mx.eval(features, lengths)
+
+        result, _ = self.decode(features, lengths)
+
+        return [
+            sentences_to_result(tokens_to_sentences(hypothesis))
+            for hypothesis in result
+        ]
 
 
 class ParakeetCTC(BaseParakeet):
@@ -381,24 +440,23 @@ class ParakeetCTC(BaseParakeet):
         self.encoder = Conformer(args.encoder)
         self.decoder = ConvASRDecoder(args.decoder)
 
-    def generate(self, mel: mx.array) -> list[AlignedResult]:
-        """
-        Generate with CTC decoding for the Parakeet model, handling batches and single input. Uses greedy decoding.
-        mel: [batch, sequence, mel_dim] or [sequence, mel_dim]
-        """
-        batch_size: int = mel.shape[0]
-        if len(mel.shape) == 2:
-            batch_size = 1
-            mel = mx.expand_dims(mel, 0)
+    def decode(
+        self,
+        features: mx.array,
+        lengths: mx.array,
+        *,
+        config: DecodingConfig = DecodingConfig(),
+    ) -> list[list[AlignedToken]]:
+        """Run CTC decoder with features and lengths. Outputs list[list[AlignedToken]]."""
+        B, S, *_ = features.shape
 
-        batch_features, lengths = self.encoder(mel)
-        logits = self.decoder(batch_features)
+        logits = self.decoder(features)
         mx.eval(logits, lengths)
 
         results = []
-        for b in range(batch_size):
-            features_len = int(lengths[b])
-            predictions = logits[b, :features_len]
+        for batch in range(B):
+            length = int(lengths[batch])
+            predictions = logits[batch, :length]
             best_tokens = mx.argmax(predictions, axis=1)
 
             hypothesis = []
@@ -444,8 +502,8 @@ class ParakeetCTC(BaseParakeet):
                 prev_token = token_idx
 
             if prev_token != -1:
-                last_non_blank = features_len - 1
-                for t in range(features_len - 1, token_boundaries[-1][0], -1):
+                last_non_blank = length - 1
+                for t in range(length - 1, token_boundaries[-1][0], -1):
                     if int(best_tokens[t]) != len(self.vocabulary):
                         last_non_blank = t
                         break
@@ -475,10 +533,26 @@ class ParakeetCTC(BaseParakeet):
                     )
                 )
 
-            result = sentences_to_result(tokens_to_sentences(hypothesis))
-            results.append(result)
+            results.append(hypothesis)
 
         return results
+
+    def generate(self, mel: mx.array) -> list[AlignedResult]:
+        """
+        Generate with CTC decoder for the Parakeet model, handling batches and single input. Uses greedy decoding.
+        mel: [batch, sequence, mel_dim] or [sequence, mel_dim]
+        """
+        if len(mel.shape) == 2:
+            mel = mx.expand_dims(mel, 0)
+
+        features, lengths = self.encoder(mel)
+
+        result = self.decode(features, lengths)
+
+        return [
+            sentences_to_result(tokens_to_sentences(hypothesis))
+            for hypothesis in result
+        ]
 
 
 class ParakeetTDTCTC(ParakeetTDT):
