@@ -21,6 +21,8 @@ class PreprocessArgs:
     dither: float
     pad_to: int = 0
     pad_value: float = 0
+    preemph: float | None = 0.97
+    mag_power: float = 2.0
 
     @property
     def win_length(self) -> int:
@@ -38,7 +40,7 @@ class PreprocessArgs:
                 n_fft=self.n_fft,
                 n_mels=self.features,
                 fmin=0,
-                fmax=None,
+                fmax=self.sample_rate / 2,
                 norm="slaney",
             ),
             dtype=mx.float32,
@@ -122,7 +124,7 @@ def stft(
         else:
             raise ValueError(f"Invalid pad_mode {pad_mode}")
 
-    padding = win_length // 2
+    padding = n_fft // 2
     x = _pad(x, padding, pad_mode)
 
     strides = [hop_length, 1]
@@ -140,6 +142,9 @@ def get_logmel(x: mx.array, args: PreprocessArgs) -> mx.array:
             pad_length = args.pad_to - x.shape[-1]
             x = mx.pad(x, ((0, pad_length),), constant_values=args.pad_value)
 
+    if args.preemph is not None:
+        x = mx.concat([x[:1], x[1:] - args.preemph * x[:-1]], axis=0)
+
     window = (
         hanning(args.win_length).astype(x.dtype)
         if args.window == "hanning"
@@ -151,9 +156,13 @@ def get_logmel(x: mx.array, args: PreprocessArgs) -> mx.array:
         if args.window == "bartlett"
         else None
     )
-
     x = stft(x, args.n_fft, args.hop_length, args.win_length, window)
-    x = mx.square(mx.abs(x)).astype(original_dtype)
+    abs = mx.abs(mx.view(x, original_dtype))
+    x = abs[..., ::2] + abs[..., 1::2]
+
+    if args.mag_power != 1.0:
+        x = mx.power(x, args.mag_power)
+
     x = mx.matmul(args._filterbanks.astype(x.dtype), x.T)
     x = mx.log(x + 1e-5)
 
