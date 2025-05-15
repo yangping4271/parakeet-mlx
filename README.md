@@ -62,7 +62,7 @@ parakeet-mlx <audio_files> [OPTIONS]
   - Overlap duration in seconds if using chunking
 
 - `--fp32` / `--bf16` (default: `bf16`)
-  - Determinate the precision to use
+  - Determine the precision to use
 
 ## Examples
 
@@ -148,22 +148,22 @@ mel = get_logmel(audio, model.preprocessor_config)
 
 # Generate transcription with alignments
 # Accepts both [batch, sequence, feat] and [sequence, feat]
-# `alignments` is list of AlignedResult. (no matter you fed batch dimension or not!)
+# `alignments` is list of AlignedResult. (no matter if you fed batch dimension or not!)
 alignments = model.generate(mel)
 ```
 
 ## Todo
 
 - [X] Add CLI for better usability
-- [X] Add support for other Parakeet varients
-- [ ] Streaming input (Although RTFx is MUCH higher than 1 currently - it should be much sufficient to stream with current state)
-- [ ] Option to enhance choosen words' accuracy
-- [ ] Chunking with continuous context (I think it might be able to achieve by preserving decoder state - just a speculation though)
+- [X] Add support for other Parakeet variants
+- [ ] Streaming input (Although RTFx is MUCH higher than 1 currently - it should be more than sufficient to stream with current state)
+- [ ] Option to enhance chosen words' accuracy
+- [ ] Chunking with continuous context (I think it might be able to achieve this by preserving decoder state - just a speculation though)
 
 
 ## Acknowledgments
 
-- Thanks to [Nvidia](https://www.nvidia.com/) for training this awesome models and writing cool papers and providing nice implementation.
+- Thanks to [Nvidia](https://www.nvidia.com/) for training these awesome models and writing cool papers and providing nice implementation.
 - Thanks to [MLX](https://github.com/ml-explore/mlx) project for providing the framework that made this implementation possible.
 - Thanks to [audiofile](https://github.com/audeering/audiofile) and [audresample](https://github.com/audeering/audresample), [numpy](https://numpy.org), [librosa](https://librosa.org) for audio processing.
 - Thanks to [dacite](https://github.com/konradhalas/dacite) for config management.
