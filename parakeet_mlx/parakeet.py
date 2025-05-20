@@ -135,6 +135,9 @@ class BaseParakeet(nn.Module):
             if chunk_callback is not None:
                 chunk_callback(end, len(audio_data))
 
+            if end - start < self.preprocessor_config.hop_length:
+                break  # prevent zero-length log mel
+
             chunk_audio = audio_data[start:end]
             chunk_mel = get_logmel(chunk_audio, self.preprocessor_config)
 
