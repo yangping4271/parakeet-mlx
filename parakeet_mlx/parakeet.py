@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, List, Optional
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -15,6 +15,7 @@ from parakeet_mlx.alignment import (
     tokens_to_sentences,
 )
 from parakeet_mlx.audio import PreprocessArgs, get_logmel, load_audio
+from parakeet_mlx.cache import ConformerCache, RotatingConformerCache
 from parakeet_mlx.conformer import Conformer, ConformerArgs
 from parakeet_mlx.ctc import AuxCTCArgs, ConvASRDecoder, ConvASRDecoderArgs
 from parakeet_mlx.rnnt import JointArgs, JointNetwork, PredictArgs, PredictNetwork
@@ -74,13 +75,159 @@ class DecodingConfig:
     decoding: str = "greedy"
 
 
+class StreamingParakeet:
+    model: "BaseParakeet"
+    cache: List[ConformerCache]
+
+    audio_buffer: mx.array
+    decoder_hidden: Optional[tuple[mx.array, mx.array]] = None
+    last_token: Optional[int] = None
+    clean_tokens: list[AlignedToken]
+    dirty_tokens: list[AlignedToken]
+
+    context_size: tuple[int, int]
+    depth: int
+    decoding_config: DecodingConfig
+
+    def __init__(
+        self,
+        model: "BaseParakeet",
+        context_size: tuple[int, int],
+        depth: int = 1,
+        *,
+        decoding_config: DecodingConfig = DecodingConfig(),
+    ) -> None:
+        self.context_size = context_size
+        self.depth = depth
+        self.decoding_config = decoding_config
+
+        self.model = model
+        self.cache = [
+            RotatingConformerCache(context_size[0], cache_drop_size=self.drop_size)
+            for _ in range(len(model.encoder.layers))
+        ]
+
+        self.audio_buffer = mx.array([])
+        self.clean_tokens = []
+        self.dirty_tokens = []
+
+    def __enter__(self):
+        self.model.encoder.set_attention_model("rel_pos_local_attn", self.context_size)
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.model.encoder.set_attention_model(
+            "rel_pos"
+        )  # hard-coded; might cache if there's actually new varient than rel_pos
+        del self.audio_buffer
+        del self.cache
+
+        mx.clear_cache()
+
+    @property
+    def drop_size(self):
+        """Indicates how many encoded feature frames to drop"""
+        return self.context_size[1] * self.depth
+
+    @property
+    def result(self):
+        """Transcription result"""
+        return sentences_to_result(
+            tokens_to_sentences(self.clean_tokens + self.dirty_tokens)
+        )
+
+    def add_audio(self, audio: mx.array) -> None:
+        """Takes portion of audio and transcribe it.
+
+        `audio` must be 1D array"""
+        # using audio buffer instead of mel buffer since mel buffer can dismiss small audio and never accumulate (#18)
+        self.audio_buffer = mx.concat(
+            [
+                self.audio_buffer,
+                audio,
+            ],
+            axis=0,
+        )
+
+        mel = get_logmel(self.audio_buffer, self.model.preprocessor_config)
+
+        features, lengths = self.model.encoder(mel, cache=self.cache)
+        mx.eval(features, lengths)
+        length = int(lengths[0])
+
+        # cache will automatically dropped in cache level
+        self.audio_buffer = self.audio_buffer[
+            -int(
+                self.drop_size
+                * self.model.encoder_config.subsampling_factor
+                * self.model.preprocessor_config.hop_length
+            ) :
+        ]
+
+        # we decode in two phase
+        # first phase: non-drop region decode - let's call them 'clean region'
+        # second phase: dirty region decode (will be dropped)
+        clean_length = max(0, length - self.drop_size)
+
+        if isinstance(self.model, ParakeetTDT) or isinstance(self.model, ParakeetRNNT):
+            clean_result, clean_state = self.model.decode(
+                features,
+                mx.array([clean_length]),
+                [self.last_token],
+                [self.decoder_hidden],
+                config=self.decoding_config,
+            )
+
+            self.decoder_hidden = clean_state[0]
+            self.last_token = (
+                clean_result[0][-1].id if len(clean_result[0]) > 0 else None
+            )
+
+            dirty_result, _ = self.model.decode(
+                features[:, clean_length:],
+                mx.array(
+                    [
+                        features[:, clean_length:].shape[1]
+                    ]  # i believe in lazy evaluation
+                ),
+                [self.last_token],
+                [self.decoder_hidden],
+                config=self.decoding_config,
+            )
+
+            self.clean_tokens.extend(clean_result[0])
+            self.dirty_tokens = dirty_result[0]
+        elif isinstance(self.model, ParakeetCTC):
+            clean_result = self.model.decode(
+                features, mx.array([clean_length]), config=self.decoding_config
+            )
+
+            dirty_result = self.model.decode(
+                features[:, clean_length:],
+                mx.array(
+                    [
+                        features[:, clean_length:].shape[1]
+                    ]  # i believe in lazy evaluation
+                ),
+                config=self.decoding_config,
+            )
+
+            self.clean_tokens.extend(clean_result[0])
+            self.dirty_tokens = dirty_result[0]
+        else:
+            raise NotImplementedError("This model does not support real-time decoding")
+
+
 class BaseParakeet(nn.Module):
     """Base parakeet model for interface purpose"""
 
-    def __init__(self, preprocess_args: PreprocessArgs):
+    def __init__(self, preprocess_args: PreprocessArgs, encoder_args: ConformerArgs):
         super().__init__()
 
         self.preprocessor_config = preprocess_args
+        self.encoder_config = encoder_args
+
+        self.encoder = Conformer(encoder_args)
 
     def generate(self, mel: mx.array) -> list[AlignedResult]:
         """
@@ -168,16 +315,43 @@ class BaseParakeet(nn.Module):
         result = sentences_to_result(tokens_to_sentences(all_tokens))
         return result
 
+    def transcribe_stream(self, context_size: tuple[int, int] = (256, 256), depth=1):
+        """
+        Create a StreamingParakeet object for real-time (streaming) inference.
+
+        Args:
+            context_size (tuple[int, int], optional):
+                A pair (left_context, right_context) for attention context windows.
+
+            depth (int, optional):
+                How many encoder layers will carry over their key/value
+                cache (i.e. hidden state) exactly across chunks. Because
+                we use local (non-causal) attention, the cache is only
+                guaranteed to match a full forward pass up through each
+                cached layer:
+
+                    • depth=1 (default): only the first encoder layer’s
+                    cache matches exactly.
+                    • depth=2: the first two layers match, and so on.
+                    • depth=N (model’s total layers): full equivalence to
+                    a non-streaming forward pass.
+
+                Setting `depth` larger than the model’s total number
+                of encoder layers won't have any impacts.
+
+        Returns:
+            StreamingParakeet: A context manager for streaming inference.
+        """
+        return StreamingParakeet(self, context_size, depth)
+
 
 class ParakeetTDT(BaseParakeet):
     """MLX Implementation of Parakeet-TDT Model"""
 
     def __init__(self, args: ParakeetTDTArgs):
-        super().__init__(args.preprocessor)
+        super().__init__(args.preprocessor, args.encoder)
 
         assert args.decoding.model_type == "tdt", "Model must be a TDT model"
-
-        self.encoder_config = args.encoder
 
         self.vocabulary = args.joint.vocabulary
         self.durations = args.decoding.durations
@@ -187,7 +361,6 @@ class ParakeetTDT(BaseParakeet):
             else None
         )
 
-        self.encoder = Conformer(args.encoder)
         self.decoder = PredictNetwork(args.decoder)
         self.joint = JointNetwork(args.joint)
 
@@ -309,9 +482,7 @@ class ParakeetRNNT(BaseParakeet):
     """MLX Implementation of Parakeet-RNNT Model"""
 
     def __init__(self, args: ParakeetRNNTArgs):
-        super().__init__(args.preprocessor)
-
-        self.encoder_config = args.encoder
+        super().__init__(args.preprocessor, args.encoder)
 
         self.vocabulary = args.joint.vocabulary
         self.max_symbols: int | None = (
@@ -320,7 +491,6 @@ class ParakeetRNNT(BaseParakeet):
             else None
         )
 
-        self.encoder = Conformer(args.encoder)
         self.decoder = PredictNetwork(args.decoder)
         self.joint = JointNetwork(args.joint)
 
@@ -434,13 +604,10 @@ class ParakeetCTC(BaseParakeet):
     """MLX Implementation of Parakeet-CTC Model"""
 
     def __init__(self, args: ParakeetCTCArgs):
-        super().__init__(args.preprocessor)
-
-        self.encoder_config = args.encoder
+        super().__init__(args.preprocessor, args.encoder)
 
         self.vocabulary = args.decoder.vocabulary
 
-        self.encoder = Conformer(args.encoder)
         self.decoder = ConvASRDecoder(args.decoder)
 
     def decode(

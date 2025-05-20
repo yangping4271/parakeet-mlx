@@ -151,6 +151,11 @@ class RelPositionMultiHeadLocalAttention(RelPositionMultiHeadAttention):
 
         self.context_size = context_size
 
+        if min(context_size) <= 0:
+            raise ValueError(
+                "Context size for RelPositionMultiHeadLocalAttention must be > 0."
+            )
+
     def __call__(
         self,
         q: mx.array,

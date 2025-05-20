@@ -1,13 +1,17 @@
 import math
 from dataclasses import dataclass
+from typing import Literal, Optional
 
 import mlx.core as mx
 import mlx.nn as nn
+from mlx.nn.utils import tree_flatten
 
 from parakeet_mlx.attention import (
+    LocalRelPositionalEncoding,
     MultiHeadAttention,
     RelPositionalEncoding,
     RelPositionMultiHeadAttention,
+    RelPositionMultiHeadLocalAttention,
 )
 
 
@@ -27,9 +31,10 @@ class ConformerArgs:
     causal_downsampling: bool = False
     use_bias: bool = True
     xscaling: bool = False
-    pos_bias_u: mx.array | None = None
-    pos_bias_v: mx.array | None = None
+    pos_bias_u: Optional[mx.array] = None
+    pos_bias_v: Optional[mx.array] = None
     subsampling_conv_chunking_factor: int = 1
+    att_context_size: Optional[list[int]] = None
 
 
 class FeedForward(nn.Module):
@@ -103,6 +108,8 @@ class ConformerBlock(nn.Module):
         super().__init__()
         ff_hidden_dim = args.d_model * args.ff_expansion_factor
 
+        self.args = args
+
         self.norm_feed_forward1 = nn.LayerNorm(args.d_model)
         self.feed_forward1 = FeedForward(args.d_model, ff_hidden_dim, args.use_bias)
 
@@ -116,6 +123,17 @@ class ConformerBlock(nn.Module):
                 pos_bias_v=args.pos_bias_v,
             )
             if args.self_attention_model == "rel_pos"
+            else RelPositionMultiHeadLocalAttention(
+                args.n_heads,
+                args.d_model,
+                bias=args.use_bias,
+                pos_bias_u=args.pos_bias_u,
+                pos_bias_v=args.pos_bias_v,
+                context_size=(args.att_context_size[0], args.att_context_size[1])
+                if args.att_context_size is not None
+                else (-1, -1),
+            )
+            if args.self_attention_model == "rel_pos_local_attn"
             else MultiHeadAttention(
                 args.n_heads,
                 args.d_model,
@@ -130,6 +148,40 @@ class ConformerBlock(nn.Module):
         self.feed_forward2 = FeedForward(args.d_model, ff_hidden_dim, args.use_bias)
 
         self.norm_out = nn.LayerNorm(args.d_model)
+
+    def set_attention_model(
+        self,
+        name: Literal["rel_pos", "rel_pos_local_attn", "normal"],
+        context_size: Optional[tuple[int, int]] = (256, 256),
+    ):
+        new_attn = (
+            RelPositionMultiHeadAttention(
+                self.args.n_heads,
+                self.args.d_model,
+                bias=self.args.use_bias,
+                pos_bias_u=self.args.pos_bias_u,
+                pos_bias_v=self.args.pos_bias_v,
+            )
+            if name == "rel_pos"
+            else RelPositionMultiHeadLocalAttention(
+                self.args.n_heads,
+                self.args.d_model,
+                bias=self.args.use_bias,
+                pos_bias_u=self.args.pos_bias_u,
+                pos_bias_v=self.args.pos_bias_v,
+                context_size=context_size if context_size is not None else (-1, -1),
+            )
+            if name == "rel_pos_local_attn"
+            else MultiHeadAttention(
+                self.args.n_heads,
+                self.args.d_model,
+                bias=True,
+            )
+        )
+
+        new_attn.update(dict(tree_flatten(self.self_attn.parameters())))
+
+        self.self_attn = new_attn
 
     def __call__(
         self,
@@ -280,8 +332,16 @@ class Conformer(nn.Module):
     def __init__(self, args: ConformerArgs):
         super().__init__()
 
+        self.args = args
+
         if args.self_attention_model == "rel_pos":
             self.pos_enc = RelPositionalEncoding(
+                d_model=args.d_model,
+                max_len=args.pos_emb_max_len,
+                scale_input=args.xscaling,
+            )
+        elif args.self_attention_model == "rel_pos_local_attn":
+            self.pos_enc = LocalRelPositionalEncoding(
                 d_model=args.d_model,
                 max_len=args.pos_emb_max_len,
                 scale_input=args.xscaling,
@@ -302,6 +362,29 @@ class Conformer(nn.Module):
 
         self.layers = [ConformerBlock(args) for _ in range(args.n_layers)]
 
+    def set_attention_model(
+        self,
+        name: Literal["rel_pos", "rel_pos_local_attn", "normal"],
+        context_size: Optional[tuple[int, int]] = (256, 256),
+    ):
+        if name == "rel_pos":
+            self.pos_enc = RelPositionalEncoding(
+                d_model=self.args.d_model,
+                max_len=self.args.pos_emb_max_len,
+                scale_input=self.args.xscaling,
+            )
+        elif name == "rel_pos_local_attn":
+            self.pos_enc = LocalRelPositionalEncoding(
+                d_model=self.args.d_model,
+                max_len=self.args.pos_emb_max_len,
+                scale_input=self.args.xscaling,
+            )
+        else:
+            self.pos_enc = None
+
+        for layer in self.layers:
+            layer.set_attention_model(name, context_size)
+
     def __call__(
         self, x: mx.array, lengths: mx.array | None = None, cache=None
     ) -> tuple[mx.array, mx.array]:
@@ -318,7 +401,7 @@ class Conformer(nn.Module):
             x = self.pre_encode(x)
             out_lengths = lengths
         else:
-            raise NotImplementedError("Unimplemented pre-encoding layer type!")
+            raise NotImplementedError("Non-implemented pre-encoding layer type!")
 
         if cache is None:
             cache = [None] * len(self.layers)

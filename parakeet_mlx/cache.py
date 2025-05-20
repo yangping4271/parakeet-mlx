@@ -82,48 +82,50 @@ class RotatingConformerCache(ConformerCache):
         self.capacity = capacity
         self.cache_drop_size = cache_drop_size
 
-    def update_and_fetch_kv(
-        self, keys: mx.array, values: mx.array
-    ) -> tuple[mx.array, mx.array]:
+    def _ring_append(self, buf: mx.array, new: mx.array):
+        C = self.capacity
+        pos = self.offset % C
+        T = new.shape[2]
+        first = min(T, C - pos)
+        buf[..., pos : pos + first, :] = new[..., :first, :]
+        if T > first:
+            buf[..., : T - first, :] = new[..., first:, :]
+
+    def update_and_fetch_kv(self, keys: mx.array, values: mx.array):
+        B, H, S, D = keys.shape
+
         if self.keys is None or self.values is None:
-            B, H, _, D_KEYS = keys.shape
-            _, _, _, D_VALUES = values.shape
-            self.keys = mx.zeros((B, H, self.capacity, D_KEYS), keys.dtype)
-            self.values = mx.zeros((B, H, self.capacity, D_VALUES), values.dtype)
+            self.keys = mx.zeros((B, H, self.capacity, D), keys.dtype)
+            self.values = mx.zeros((B, H, self.capacity, D), keys.dtype)
 
-        S = keys.shape[2]
-
-        if S <= self.cache_drop_size:
-            pass
+        if self.offset < self.capacity:
+            hist_k = self.keys[..., : self.offset, :]
+            hist_v = self.values[..., : self.offset, :]
         else:
-            tokens_to_cache = S - self.cache_drop_size
-            keys_to_cache = keys[..., :tokens_to_cache, :]
-            values_to_cache = values[..., :tokens_to_cache, :]
+            shift = -(self.offset % self.capacity)
+            hist_k = mx.roll(self.keys, shift, 2)
+            hist_v = mx.roll(self.values, shift, 2)
 
-            pos = self.offset % self.capacity
-            space_left = self.capacity - pos
+        drop = self.cache_drop_size
+        to_cache = min(max(0, S - drop), self.capacity)
 
-            if tokens_to_cache <= space_left:
-                self.keys[..., pos : pos + tokens_to_cache, :] = keys_to_cache
-                self.values[..., pos : pos + tokens_to_cache, :] = values_to_cache
-            else:
-                self.keys[..., pos:, :] = keys_to_cache[..., :space_left, :]
-                self.values[..., pos:, :] = values_to_cache[..., :space_left, :]
+        if to_cache > 0:
+            k_chunk = keys[
+                ...,
+                S - self.cache_drop_size - to_cache : S - self.cache_drop_size,
+                :,
+            ]
+            v_chunk = values[
+                ...,
+                S - self.cache_drop_size - to_cache : S - self.cache_drop_size,
+                :,
+            ]
+            self._ring_append(self.keys, k_chunk)
+            self._ring_append(self.values, v_chunk)
+            self.offset += to_cache
 
-                remaining_s = tokens_to_cache - space_left
-                self.keys[..., :remaining_s, :] = keys_to_cache[..., space_left:, :]
-                self.values[..., :remaining_s, :] = values_to_cache[..., space_left:, :]
-
-            self.offset += tokens_to_cache
-
-        if self.offset <= self.capacity:
-            k_out = self.keys[..., : self.offset, :]
-            v_out = self.values[..., : self.offset, :]
-        else:
-            shift_amount = -(self.offset % self.capacity)
-
-            k_out = mx.roll(self.keys, shift_amount, 2)
-            v_out = mx.roll(self.values, shift_amount, 2)
+        k_out = mx.concatenate([hist_k, keys], axis=2)
+        v_out = mx.concatenate([hist_v, values], axis=2)
 
         return k_out, v_out
 
