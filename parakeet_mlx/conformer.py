@@ -48,6 +48,8 @@ class Convolution(nn.Module):
         assert (args.conv_kernel_size - 1) % 2 == 0
         super().__init__()
 
+        self.padding = (args.conv_kernel_size - 1) // 2
+
         self.pointwise_conv1 = nn.Conv1d(
             args.d_model,
             args.d_model * 2,
@@ -61,7 +63,7 @@ class Convolution(nn.Module):
             args.d_model,
             kernel_size=args.conv_kernel_size,
             stride=1,
-            padding=(args.conv_kernel_size - 1) // 2,
+            padding=0,
             groups=args.d_model,
             bias=args.use_bias,
         )
@@ -76,13 +78,19 @@ class Convolution(nn.Module):
             bias=args.use_bias,
         )
 
-    def __call__(self, x: mx.array) -> mx.array:
+    def __call__(self, x: mx.array, cache=None) -> mx.array:
         # x = x.swapaxes(1, 2)
 
         x = self.pointwise_conv1(x)
         x = nn.glu(x, axis=2)  # might make it variable later
 
+        # caching for conv!
+        if cache is not None:
+            x = cache.update_and_fetch_conv(x, padding=self.padding)
+        else:
+            x = mx.pad(x, ((0, 0), (self.padding, self.padding), (0, 0)))
         x = self.depthwise_conv(x)
+
         x = self.batch_norm(x)
         x = self.activation(x)
         x = self.pointwise_conv2(x)
