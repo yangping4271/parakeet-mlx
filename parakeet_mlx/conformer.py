@@ -197,7 +197,7 @@ class ConformerBlock(nn.Module):
             x_norm, x_norm, x_norm, mask=mask, pos_emb=pos_emb, cache=cache
         )
 
-        x += self.conv(self.norm_conv(x))
+        x += self.conv(self.norm_conv(x), cache=cache)
         x += 0.5 * self.feed_forward2(self.norm_feed_forward2(x))
 
         return self.norm_out(x)

@@ -12,6 +12,7 @@ class ConformerCache:
     def __init__(self):
         self.keys = None
         self.values = None
+        self.conv = None
         self.offset = 0
 
     def update_and_fetch_kv(
@@ -106,6 +107,9 @@ class RotatingConformerCache(ConformerCache):
             hist_k = mx.roll(self.keys, shift, 2)
             hist_v = mx.roll(self.values, shift, 2)
 
+        k_out = mx.concatenate([hist_k, keys], axis=2)
+        v_out = mx.concatenate([hist_v, values], axis=2)
+
         drop = self.cache_drop_size
         to_cache = min(max(0, S - drop), self.capacity)
 
@@ -123,9 +127,6 @@ class RotatingConformerCache(ConformerCache):
             self._ring_append(self.keys, k_chunk)
             self._ring_append(self.values, v_chunk)
             self.offset += to_cache
-
-        k_out = mx.concatenate([hist_k, keys], axis=2)
-        v_out = mx.concatenate([hist_v, values], axis=2)
 
         return k_out, v_out
 
@@ -150,6 +151,6 @@ class RotatingConformerCache(ConformerCache):
                 self.conv = cache_update
 
         result = mx.concatenate([self.conv, x], axis=1)
-        result = mx.pad(result, ((0, 0), (0, padding)))
+        result = mx.pad(result, ((0, 0), (0, padding), (0, 0)))
 
         return result
