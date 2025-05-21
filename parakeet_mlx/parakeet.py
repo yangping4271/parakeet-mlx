@@ -114,7 +114,7 @@ class StreamingParakeet:
         self.dirty_tokens = []
 
     def __enter__(self):
-        # self.model.encoder.set_attention_model("rel_pos_local_attn", self.context_size)
+        self.model.encoder.set_attention_model("rel_pos_local_attn", self.context_size)
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
