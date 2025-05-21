@@ -80,6 +80,7 @@ class StreamingParakeet:
     cache: List[ConformerCache]
 
     audio_buffer: mx.array
+    mel_buffer: Optional[mx.array]
     decoder_hidden: Optional[tuple[mx.array, mx.array]] = None
     last_token: Optional[int] = None
     clean_tokens: list[AlignedToken]
@@ -108,11 +109,12 @@ class StreamingParakeet:
         ]
 
         self.audio_buffer = mx.array([])
+        self.mel_buffer = None
         self.clean_tokens = []
         self.dirty_tokens = []
 
     def __enter__(self):
-        self.model.encoder.set_attention_model("rel_pos_local_attn", self.context_size)
+        # self.model.encoder.set_attention_model("rel_pos_local_attn", self.context_size)
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
@@ -140,7 +142,6 @@ class StreamingParakeet:
         """Takes portion of audio and transcribe it.
 
         `audio` must be 1D array"""
-        # using audio buffer instead of mel buffer since mel buffer can dismiss small audio and never accumulate (#18)
         self.audio_buffer = mx.concat(
             [
                 self.audio_buffer,
@@ -148,20 +149,56 @@ class StreamingParakeet:
             ],
             axis=0,
         )
+        mel = get_logmel(
+            self.audio_buffer[
+                : (
+                    len(self.audio_buffer)
+                    // self.model.preprocessor_config.hop_length
+                    * self.model.preprocessor_config.hop_length
+                )
+            ],
+            self.model.preprocessor_config,
+        )
 
-        mel = get_logmel(self.audio_buffer, self.model.preprocessor_config)
+        if self.mel_buffer is None:  # init
+            self.mel_buffer = mel
+        else:
+            self.mel_buffer = mx.concat([self.mel_buffer, mel], axis=1)
 
-        features, lengths = self.model.encoder(mel, cache=self.cache)
+        self.audio_buffer = self.audio_buffer[
+            (mel.shape[1] * self.model.preprocessor_config.hop_length) :
+        ]
+
+        features, lengths = self.model.encoder(
+            self.mel_buffer[
+                :,
+                : (
+                    self.mel_buffer.shape[1]
+                    // self.model.encoder_config.subsampling_factor
+                    * self.model.encoder_config.subsampling_factor
+                ),
+            ],
+            cache=self.cache,
+        )
         mx.eval(features, lengths)
         length = int(lengths[0])
 
         # cache will automatically dropped in cache level
-        self.audio_buffer = self.audio_buffer[
-            -int(
-                self.drop_size
-                * self.model.encoder_config.subsampling_factor
-                * self.model.preprocessor_config.hop_length
-            ) :
+        leftover = self.mel_buffer.shape[1] - (
+            length * self.model.encoder_config.subsampling_factor
+        )
+        assert (
+            leftover
+            == self.mel_buffer.shape[1]
+            - self.mel_buffer.shape[1]
+            // self.model.encoder_config.subsampling_factor
+            * self.model.encoder_config.subsampling_factor
+        )
+        self.mel_buffer = self.mel_buffer[
+            :,
+            -(
+                self.drop_size * self.model.encoder_config.subsampling_factor + leftover
+            ) :,
         ]
 
         # we decode in two phase
