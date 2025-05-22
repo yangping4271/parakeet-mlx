@@ -246,7 +246,10 @@ class RelPositionMultiHeadLocalAttention(RelPositionMultiHeadAttention):
         uint b_idx = remaining_idx / H;
         uint k_offset = uint(int(k_rel_idx));
 
-        int s_k_idx_signed = int(s_q_idx) + int(k_offset) - int(W);
+        uint stick_q_k_idx = S_k - S_q + s_q_idx;
+        // stick to right (assuming S_k >= S_q)
+
+        int s_k_idx_signed = int(stick_q_k_idx) + int(k_offset) - int(W);
         bool is_out_of_bounds = (s_k_idx_signed < 0) || (s_k_idx_signed >= S_k);
 
         float current_sum = 0.0f;
