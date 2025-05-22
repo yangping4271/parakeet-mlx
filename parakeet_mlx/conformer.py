@@ -179,7 +179,7 @@ class ConformerBlock(nn.Module):
             )
         )
 
-        new_attn.update(dict(tree_flatten(self.self_attn.parameters())))
+        new_attn.load_weights(tree_flatten(self.self_attn.parameters()))
 
         self.self_attn = new_attn
 

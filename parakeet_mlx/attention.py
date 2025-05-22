@@ -168,8 +168,10 @@ class RelPositionMultiHeadLocalAttention(RelPositionMultiHeadAttention):
         if pos_emb is None:
             raise ValueError("pos_emb is necessary!")
 
-        q, k, v = self.linear_q(q), self.linear_k(k), self.linear_v(v)
+        if mask is None:
+            mask = mx.zeros((q.shape[:2]), dtype=mx.bool_)  # type: ignore
 
+        q, k, v = self.linear_q(q), self.linear_k(k), self.linear_v(v)
         p = self.linear_pos(pos_emb)  # p stands for position
 
         batch, q_seq, _ = q.shape
@@ -191,11 +193,10 @@ class RelPositionMultiHeadLocalAttention(RelPositionMultiHeadAttention):
         q = mx.pad(q, ((0, 0), (0, 0), (0, pad_len), (0, 0)))
         k = mx.pad(k, ((0, 0), (0, 0), (0, pad_len), (0, 0)))
         v = mx.pad(v, ((0, 0), (0, 0), (0, pad_len), (0, 0)))
+        mask = mx.pad(mask, ((0, 0), (0, pad_len)), constant_values=True)
 
         q_u = q + mx.expand_dims(self.pos_bias_u, 1)
         q_v = q + mx.expand_dims(self.pos_bias_v, 1)
-
-        # lets not handle mask for now
 
         matrix_ac = self.matmul_qk(q_u, k, w)  # (batch, head, seq, 2w + 1)
         matrix_bd = mx.matmul(q_v, p.swapaxes(-2, -1))  # (batch, head, seq, 2w + 1)
@@ -212,7 +213,15 @@ class RelPositionMultiHeadLocalAttention(RelPositionMultiHeadAttention):
 
         scores = matrix_ac * self.scale
 
+        mask = mx.expand_dims(mx.expand_dims(mask, 1), -1)
+        float_mask = mx.where(mask, -mx.inf, 0.0).astype(matrix_ac.dtype)
+        ones = mx.ones_like(float_mask)
+        d_mask = self.matmul_qk(ones, float_mask, w)
+
+        scores += d_mask
+
         attn = mx.softmax(scores, -1)
+        attn = mx.where(mask, 0, attn)
         out = self.matmul_pv(attn, v, w)
 
         out = out.reshape(batch, -1, self.n_head * self.head_dim)[:, :q_seq]
@@ -220,56 +229,184 @@ class RelPositionMultiHeadLocalAttention(RelPositionMultiHeadAttention):
         return self.linear_out(out)
 
     def matmul_qk(self, q: mx.array, k: mx.array, w: int) -> mx.array:
-        # TODO: very early and proof of concept. VERY MUCH MEMORY INEFFICIENT i should write metal kernel or whatever
+        KERNEL = """
+        // D, W are provided as constant
+        uint B = q_shape[0];
+        uint H = q_shape[1];
+        uint S_q = q_shape[2];
+        uint S_k = k_shape[2];
+        uint K_rel = 2 * W + 1;
+
+        uint target_idx = thread_position_in_grid.x;
+        uint k_rel_idx = thread_position_in_grid.y;
+
+        uint s_q_idx = target_idx % S_q;
+        uint remaining_idx = target_idx / S_q;
+        uint h_idx = remaining_idx % H;
+        uint b_idx = remaining_idx / H;
+        uint k_offset = uint(int(k_rel_idx));
+
+        int s_k_idx_signed = int(s_q_idx) + int(k_offset) - int(W);
+        bool is_out_of_bounds = (s_k_idx_signed < 0) || (s_k_idx_signed >= S_k);
+
+        float current_sum = 0.0f;
+
+        if (!is_out_of_bounds) {
+            uint s_k_idx = uint(s_k_idx_signed);
+
+            // q[b, h, s_q, d]
+            uint Q_D_stride = D;
+            uint Q_S_stride = S_q * Q_D_stride;
+            uint Q_H_stride = H * Q_S_stride;
+            // k[b, h, s_k, d]
+            uint K_D_stride = D;
+            uint K_S_stride = S_k * K_D_stride;
+            uint K_H_stride = H * K_S_stride;
+
+            uint q_base_offset =
+                b_idx * Q_H_stride + h_idx * Q_S_stride + s_q_idx * Q_D_stride;
+            uint k_base_offset =
+                b_idx * K_H_stride + h_idx * K_S_stride + s_k_idx * K_D_stride;
+
+            const device T* q_vec_ptr = q + q_base_offset;
+            const device T* k_vec_ptr = k + k_base_offset;
+
+            for (uint d_idx = 0; d_idx < D; ++d_idx) {
+                current_sum += (float)(q_vec_ptr[d_idx]) * (float)(k_vec_ptr[d_idx]);
+            }
+        }
+
+        // out[b, h, s_q, k_rel]
+        uint out_idx = target_idx * K_rel + k_rel_idx;
+        if (is_out_of_bounds) {
+            out[out_idx] = -INFINITY;
+        } else {
+            out[out_idx] = (T) current_sum;
+        }
+        """
+
         B, H, S_q, D = q.shape
         _, _, S_k, _ = k.shape
 
-        k_pad = mx.pad(k, ((0, 0), (0, 0), (w, w), (0, 0)))
+        output_shape = (B, H, S_q, 2 * w + 1)
 
-        # very much naive and consumes A LOT of memory right now.
-        raw_idx = mx.arange(S_q)[:, None] + mx.arange(2 * w + 1)[None, :]
-        idx = mx.clip(raw_idx, 0, S_k + 2 * w - 1)
+        grid_dim_x = B * H * S_q
+        grid_dim_y = 2 * w + 1
+        grid_dim_z = 1
 
-        windows = k_pad[:, :, idx]
-        scores = mx.einsum("bhsd,bhskd->bhsk", q, windows)
-
-        mask = (raw_idx < w) | (raw_idx >= (S_k + w))
-        mask = mask.reshape((1, 1, S_q, 2 * w + 1))
-
-        scores = mx.where(mask, -mx.inf, scores)
-
-        return scores
-
-    def matmul_pv(self, prob: mx.array, v: mx.array, w: int) -> mx.array:
-        # TODO: same with matmul_qk, very inefficient and skewing makes readibility really bad. i should write metal kernel for this too.
-        B, H, S, _ = prob.shape
-        L_chunks = S // w
-        N = B * H  # merge batchs and heads temporary
-
-        chunk_prob = prob.reshape(B * H, L_chunks, w, 2 * w + 1)
-
-        # skewing like nemo implementation
-        prob_pad = mx.pad(chunk_prob, ((0, 0), (0, 0), (0, 0), (0, w + 1)))
-        prob_pad = prob_pad.reshape(N, L_chunks, -1)
-        prob_pad = prob_pad[:, :, :-w]
-        prob_pad = prob_pad.reshape(N, L_chunks, w, 3 * w + 1)
-        skewed_prob = prob_pad[:, :, :, :-1]
-
-        v_pad = mx.pad(v.reshape(N, S, -1), ((0, 0), (w, w), (0, 0)))
-
-        # very much naive
-        starts = mx.arange(0, L_chunks * w, w)
-        idx = starts[:, None] + mx.arange(3 * w)[None, :]
-
-        chunk_v = v_pad[:, idx, :]
-
-        context = mx.einsum(
-            "bcwd,bcdh->bcwh",
-            skewed_prob,
-            chunk_v,
+        kernel_fn = mx.fast.metal_kernel(
+            name="local_qk_matmul",
+            input_names=["q", "k"],
+            output_names=["out"],
+            source=KERNEL,
         )
 
-        return context.reshape(B, H, S, -1).transpose(0, 2, 1, 3)
+        grid_dim_x = max(1, grid_dim_x)
+        grid_dim_y = max(1, grid_dim_y)
+
+        tg_y = min(grid_dim_y, 32)
+        tg_x = min(grid_dim_x, 1024 // tg_y)
+
+        tg_x = max(tg_x, 1)
+        tg_y = max(tg_y, 1)
+
+        outputs = kernel_fn(  # type: ignore
+            inputs=[q, k],
+            template=[
+                ("T", q.dtype),
+                ("W", w),
+                ("D", D),
+            ],
+            grid=(grid_dim_x, grid_dim_y, grid_dim_z),
+            threadgroup=(tg_x, tg_y, 1),
+            output_shapes=[output_shape],
+            output_dtypes=[q.dtype],
+        )
+        return outputs[0]
+
+    def matmul_pv(self, prob: mx.array, v: mx.array, w: int) -> mx.array:
+        KERNEL = """
+        // D, W, D_v are provided as constant
+        uint B = prob_shape[0];
+        uint H = prob_shape[1];
+        uint S_p = prob_shape[2];
+        uint S_v = v_shape[2];
+        uint K_rel = 2 * W + 1;
+
+        uint d_idx = thread_position_in_grid.x;
+        uint s_p_idx = thread_position_in_grid.y;
+        uint bh_idx = thread_position_in_grid.z;  // merged
+
+        if (d_idx >= D_v || s_p_idx >= S_p || bh_idx >= (B * H)) {
+            return;
+        }
+
+        uint b_idx = bh_idx / H;
+        uint h_idx = bh_idx % H;
+
+        float current_sum = 0.0f;
+
+        // p[b, h, s_p, k_rel]
+        uint P_H_stride = S_p * K_rel;
+        uint P_B_stride = H * P_H_stride;
+
+        // v[b, h, s_v, d]
+        uint V_H_stride = S_v * D_v;
+        uint V_B_stride = H * V_H_stride;
+
+        // out[b, s_p, h, d]
+        uint O_S_stride = D_v * H;
+        uint O_B_stride = S_p * O_S_stride;
+
+        for (uint k = 0; k < K_rel; ++k) {
+            int s_v_idx_signed = int(s_p_idx) + int(k) - int(W);  // for boundary check
+            if (s_v_idx_signed >= 0 && s_v_idx_signed < S_v) {
+                uint s_v_idx = uint(s_v_idx_signed);
+                uint prob_idx =
+                    b_idx * P_B_stride + h_idx * P_H_stride + s_p_idx * K_rel + k;
+                uint v_idx =
+                    b_idx * V_B_stride + h_idx * V_H_stride + s_v_idx * D_v + d_idx;
+                current_sum += prob[prob_idx] * v[v_idx];
+            }
+        }
+
+        uint out_idx =
+            b_idx * O_B_stride + s_p_idx * O_S_stride + h_idx * D_v + d_idx;
+
+        context_out[out_idx] = current_sum;
+        """
+
+        B, H, S_p, K_rel = prob.shape
+        _, _, S_v, D_v = v.shape
+
+        kernel_fn = mx.fast.metal_kernel(
+            name="local_pv_matmul",
+            input_names=["prob", "v"],
+            output_names=["context_out"],
+            source=KERNEL,
+        )
+
+        output_shape = (B, S_p, H, D_v)
+
+        grid_dim_x = D_v
+        grid_dim_y = S_p
+        grid_dim_z = B * H
+
+        tg_x = min(grid_dim_x, 32)
+        tg_y = min(grid_dim_y, 1024 // tg_x)
+        tg_x = max(tg_x, 1)
+        tg_y = max(tg_y, 1)
+
+        outputs = kernel_fn(  # type: ignore
+            inputs=[prob, v],
+            template=[("T", prob.dtype), ("W", w), ("D", K_rel), ("D_v", D_v)],
+            grid=(grid_dim_x, grid_dim_y, grid_dim_z),
+            threadgroup=(tg_x, tg_y, 1),
+            output_shapes=[output_shape],
+            output_dtypes=[prob.dtype],
+        )
+
+        return outputs[0]
 
 
 class RelPositionalEncoding(nn.Module):
