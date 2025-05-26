@@ -345,6 +345,9 @@ class Conformer(nn.Module):
                 d_model=args.d_model,
                 max_len=args.pos_emb_max_len,
                 scale_input=args.xscaling,
+                context_size=(args.att_context_size[0], args.att_context_size[1])
+                if args.att_context_size is not None
+                else (-1, -1),
             )
         else:
             self.pos_enc = None
@@ -378,6 +381,7 @@ class Conformer(nn.Module):
                 d_model=self.args.d_model,
                 max_len=self.args.pos_emb_max_len,
                 scale_input=self.args.xscaling,
+                context_size=context_size if context_size else (-1, -1),
             )
         else:
             self.pos_enc = None
