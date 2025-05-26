@@ -134,6 +134,57 @@ print(result.sentences)
   - `end`: End time in seconds
   - `duration`: Between `start` and `end`.
 
+## Streaming Transcription
+
+For real-time transcription, use the `transcribe_stream` method which creates a streaming context:
+
+```py
+from parakeet_mlx import from_pretrained
+from parakeet_mlx.audio import load_audio
+import numpy as np
+
+model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v2")
+
+# Create a streaming context
+with model.transcribe_stream(
+    context_size=(256, 256),  # (left_context, right_context) frames
+) as transcriber:
+    # Simulate real-time audio chunks
+    audio_data = load_audio("audio_file.wav", model.preprocessor_config.sample_rate)
+    chunk_size = model.preprocessor_config.sample_rate  # 1 second chunks
+
+    for i in range(0, len(audio_data), chunk_size):
+        chunk = audio_data[i:i+chunk_size]
+        transcriber.add_audio(chunk)
+
+        # Access current transcription
+        result = transcriber.result
+        print(f"Current text: {result.text}")
+
+        # Access finalized and draft tokens
+        # transcriber.finalized_tokens
+        # transcriber.draft_tokens
+```
+
+### Streaming Parameters
+
+- `context_size`: Tuple of (left_context, right_context) for attention windows
+  - Controls how many frames the model looks at before and after current position
+  - Default: (256, 256)
+
+- `depth`: Number of encoder layers that preserve exact computation across chunks
+  - Controls how many layers maintain exact equivalence with non-streaming forward pass
+  - depth=1: Only first encoder layer matches non-streaming computation exactly
+  - depth=2: First two layers match exactly, and so on
+  - depth=N (total layers): Full equivalence to non-streaming forward pass
+  - Higher depth means more computational consistency with non-streaming mode
+  - Default: 1
+
+- `keep_original_attention`: Whether to keep original attention mechanism
+  - False: Switches to local attention for streaming (recommended)
+  - True: Keeps original attention (less suitable for streaming)
+  - Default: False
+
 ## Low-Level API
 
 To transcribe log-mel spectrum directly, you can do the following:
@@ -156,9 +207,9 @@ alignments = model.generate(mel)
 
 - [X] Add CLI for better usability
 - [X] Add support for other Parakeet variants
-- [ ] Streaming input (Although RTFx is MUCH higher than 1 currently - it should be more than sufficient to stream with current state)
+- [X] Streaming input (real-time transcription with `transcribe_stream`)
 - [ ] Option to enhance chosen words' accuracy
-- [ ] Chunking with continuous context (I think it might be able to achieve this by preserving decoder state - just a speculation though)
+- [ ] Chunking with continuous context (partially achieved with streaming)
 
 
 ## Acknowledgments
