@@ -154,21 +154,21 @@ class BaseParakeet(nn.Module):
                     token.start += chunk_offset
                     token.end = token.start + token.duration
 
-            chunk_tokens = []
-            for sentence in chunk_result.sentences:
-                chunk_tokens.extend(sentence.tokens)
-
             if all_tokens:
                 try:
                     all_tokens = merge_longest_contiguous(
-                        all_tokens, chunk_tokens, overlap_duration=overlap_duration
+                        all_tokens,
+                        chunk_result.tokens,
+                        overlap_duration=overlap_duration,
                     )
                 except RuntimeError:
                     all_tokens = merge_longest_common_subsequence(
-                        all_tokens, chunk_tokens, overlap_duration=overlap_duration
+                        all_tokens,
+                        chunk_result.tokens,
+                        overlap_duration=overlap_duration,
                     )
             else:
-                all_tokens = chunk_tokens
+                all_tokens = chunk_result.tokens
 
         result = sentences_to_result(tokens_to_sentences(all_tokens))
         return result
