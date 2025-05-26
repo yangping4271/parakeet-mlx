@@ -75,186 +75,7 @@ class DecodingConfig:
     decoding: str = "greedy"
 
 
-class StreamingParakeet:
-    model: "BaseParakeet"
-    cache: List[ConformerCache]
-
-    audio_buffer: mx.array
-    mel_buffer: Optional[mx.array]
-    decoder_hidden: Optional[tuple[mx.array, mx.array]] = None
-    last_token: Optional[int] = None
-    clean_tokens: list[AlignedToken]
-    dirty_tokens: list[AlignedToken]
-
-    context_size: tuple[int, int]
-    depth: int
-    decoding_config: DecodingConfig
-
-    def __init__(
-        self,
-        model: "BaseParakeet",
-        context_size: tuple[int, int],
-        depth: int = 1,
-        *,
-        decoding_config: DecodingConfig = DecodingConfig(),
-    ) -> None:
-        self.context_size = context_size
-        self.depth = depth
-        self.decoding_config = decoding_config
-
-        self.model = model
-        self.cache = [
-            RotatingConformerCache(context_size[0], cache_drop_size=self.drop_size)
-            for _ in range(len(model.encoder.layers))
-        ]
-
-        self.audio_buffer = mx.array([])
-        self.mel_buffer = None
-        self.clean_tokens = []
-        self.dirty_tokens = []
-
-    def __enter__(self):
-        self.model.encoder.set_attention_model("rel_pos_local_attn", self.context_size)
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.model.encoder.set_attention_model(
-            "rel_pos"
-        )  # hard-coded; might cache if there's actually new varient than rel_pos
-        del self.audio_buffer
-        del self.cache
-
-        mx.clear_cache()
-
-    @property
-    def drop_size(self):
-        """Indicates how many encoded feature frames to drop"""
-        return self.context_size[1] * self.depth
-
-    @property
-    def result(self):
-        """Transcription result"""
-        return sentences_to_result(
-            tokens_to_sentences(self.clean_tokens + self.dirty_tokens)
-        )
-
-    def add_audio(self, audio: mx.array) -> None:
-        """Takes portion of audio and transcribe it.
-
-        `audio` must be 1D array"""
-        self.audio_buffer = mx.concat(
-            [
-                self.audio_buffer,
-                audio,
-            ],
-            axis=0,
-        )
-        mel = get_logmel(
-            self.audio_buffer[
-                : (
-                    len(self.audio_buffer)
-                    // self.model.preprocessor_config.hop_length
-                    * self.model.preprocessor_config.hop_length
-                )
-            ],
-            self.model.preprocessor_config,
-        )
-
-        if self.mel_buffer is None:  # init
-            self.mel_buffer = mel
-        else:
-            self.mel_buffer = mx.concat([self.mel_buffer, mel], axis=1)
-
-        self.audio_buffer = self.audio_buffer[
-            (mel.shape[1] * self.model.preprocessor_config.hop_length) :
-        ]
-
-        features, lengths = self.model.encoder(
-            self.mel_buffer[
-                :,
-                : (
-                    self.mel_buffer.shape[1]
-                    // self.model.encoder_config.subsampling_factor
-                    * self.model.encoder_config.subsampling_factor
-                ),
-            ],
-            cache=self.cache,
-        )
-        mx.eval(features, lengths)
-        length = int(lengths[0])
-
-        # cache will automatically dropped in cache level
-        leftover = self.mel_buffer.shape[1] - (
-            length * self.model.encoder_config.subsampling_factor
-        )
-        assert (
-            leftover
-            == self.mel_buffer.shape[1]
-            - self.mel_buffer.shape[1]
-            // self.model.encoder_config.subsampling_factor
-            * self.model.encoder_config.subsampling_factor
-        )
-        self.mel_buffer = self.mel_buffer[
-            :,
-            -(
-                self.drop_size * self.model.encoder_config.subsampling_factor + leftover
-            ) :,
-        ]
-
-        # we decode in two phase
-        # first phase: non-drop region decode - let's call them 'clean region'
-        # second phase: dirty region decode (will be dropped)
-        clean_length = max(0, length - self.drop_size)
-
-        if isinstance(self.model, ParakeetTDT) or isinstance(self.model, ParakeetRNNT):
-            clean_result, clean_state = self.model.decode(
-                features,
-                mx.array([clean_length]),
-                [self.last_token],
-                [self.decoder_hidden],
-                config=self.decoding_config,
-            )
-
-            self.decoder_hidden = clean_state[0]
-            self.last_token = (
-                clean_result[0][-1].id if len(clean_result[0]) > 0 else None
-            )
-
-            dirty_result, _ = self.model.decode(
-                features[:, clean_length:],
-                mx.array(
-                    [
-                        features[:, clean_length:].shape[1]
-                    ]  # i believe in lazy evaluation
-                ),
-                [self.last_token],
-                [self.decoder_hidden],
-                config=self.decoding_config,
-            )
-
-            self.clean_tokens.extend(clean_result[0])
-            self.dirty_tokens = dirty_result[0]
-        elif isinstance(self.model, ParakeetCTC):
-            clean_result = self.model.decode(
-                features, mx.array([clean_length]), config=self.decoding_config
-            )
-
-            dirty_result = self.model.decode(
-                features[:, clean_length:],
-                mx.array(
-                    [
-                        features[:, clean_length:].shape[1]
-                    ]  # i believe in lazy evaluation
-                ),
-                config=self.decoding_config,
-            )
-
-            self.clean_tokens.extend(clean_result[0])
-            self.dirty_tokens = dirty_result[0]
-        else:
-            raise NotImplementedError("This model does not support real-time decoding")
-
-
+# common methods
 class BaseParakeet(nn.Module):
     """Base parakeet model for interface purpose"""
 
@@ -352,7 +173,9 @@ class BaseParakeet(nn.Module):
         result = sentences_to_result(tokens_to_sentences(all_tokens))
         return result
 
-    def transcribe_stream(self, context_size: tuple[int, int] = (256, 256), depth=1):
+    def transcribe_stream(
+        self, context_size: tuple[int, int] = (256, 256), depth=1
+    ) -> "StreamingParakeet":
         """
         Create a StreamingParakeet object for real-time (streaming) inference.
 
@@ -382,6 +205,7 @@ class BaseParakeet(nn.Module):
         return StreamingParakeet(self, context_size, depth)
 
 
+# models
 class ParakeetTDT(BaseParakeet):
     """MLX Implementation of Parakeet-TDT Model"""
 
@@ -771,3 +595,183 @@ class ParakeetTDTCTC(ParakeetTDT):
         super().__init__(args)
 
         self.ctc_decoder = ConvASRDecoder(args.aux_ctc.decoder)
+
+
+# streaming
+class StreamingParakeet:
+    model: "BaseParakeet"
+    cache: List[ConformerCache]
+
+    audio_buffer: mx.array
+    mel_buffer: Optional[mx.array]
+    decoder_hidden: Optional[tuple[mx.array, mx.array]] = None
+    last_token: Optional[int] = None
+    clean_tokens: list[AlignedToken]
+    dirty_tokens: list[AlignedToken]
+
+    context_size: tuple[int, int]
+    depth: int
+    decoding_config: DecodingConfig
+
+    def __init__(
+        self,
+        model: "BaseParakeet",
+        context_size: tuple[int, int],
+        depth: int = 1,
+        *,
+        decoding_config: DecodingConfig = DecodingConfig(),
+    ) -> None:
+        self.context_size = context_size
+        self.depth = depth
+        self.decoding_config = decoding_config
+
+        self.model = model
+        self.cache = [
+            RotatingConformerCache(self.keep_size, cache_drop_size=self.drop_size)
+            for _ in range(len(model.encoder.layers))
+        ]
+
+        self.audio_buffer = mx.array([])
+        self.mel_buffer = None
+        self.clean_tokens = []
+        self.dirty_tokens = []
+
+    def __enter__(self):
+        self.model.encoder.set_attention_model("rel_pos_local_attn", self.context_size)
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.model.encoder.set_attention_model(
+            "rel_pos"
+        )  # hard-coded; might cache if there's actually new varient than rel_pos
+        del self.audio_buffer
+        del self.cache
+
+        mx.clear_cache()
+
+    @property
+    def keep_size(self):
+        """Indicates how many encoded feature frames to keep in KV cache"""
+        return self.context_size[0] * self.depth
+
+    @property
+    def drop_size(self):
+        """Indicates how many encoded feature frames to drop"""
+        return self.context_size[1] * self.depth
+
+    @property
+    def result(self) -> AlignedResult:
+        """Transcription result"""
+        return sentences_to_result(
+            tokens_to_sentences(self.clean_tokens + self.dirty_tokens)
+        )
+
+    def add_audio(self, audio: mx.array) -> None:
+        """Takes portion of audio and transcribe it.
+
+        `audio` must be 1D array"""
+
+        self.audio_buffer = mx.concat(
+            [
+                self.audio_buffer,
+                audio,
+            ],
+            axis=0,
+        )
+        mel = get_logmel(
+            self.audio_buffer[
+                : (
+                    len(self.audio_buffer)
+                    // self.model.preprocessor_config.hop_length
+                    * self.model.preprocessor_config.hop_length
+                )
+            ],
+            self.model.preprocessor_config,
+        )
+
+        if self.mel_buffer is None:  # init
+            self.mel_buffer = mel
+        else:
+            self.mel_buffer = mx.concat([self.mel_buffer, mel], axis=1)
+
+        self.audio_buffer = self.audio_buffer[
+            (mel.shape[1] * self.model.preprocessor_config.hop_length) :
+        ]
+
+        features, lengths = self.model.encoder(
+            self.mel_buffer[
+                :,
+                : (
+                    self.mel_buffer.shape[1]
+                    // self.model.encoder_config.subsampling_factor
+                    * self.model.encoder_config.subsampling_factor
+                ),
+            ],
+            cache=self.cache,
+        )
+        mx.eval(features, lengths)
+        length = int(lengths[0])
+
+        # cache will automatically dropped in cache level
+        leftover = self.mel_buffer.shape[1] - (
+            length * self.model.encoder_config.subsampling_factor
+        )
+        self.mel_buffer = self.mel_buffer[
+            :,
+            -(
+                self.drop_size * self.model.encoder_config.subsampling_factor + leftover
+            ) :,
+        ]
+
+        # we decode in two phase
+        # first phase: non-drop region decode - let's call them 'clean region'
+        # second phase: dirty region decode (will be dropped)
+        clean_length = max(0, length - self.drop_size)
+
+        if isinstance(self.model, ParakeetTDT) or isinstance(self.model, ParakeetRNNT):
+            clean_result, clean_state = self.model.decode(
+                features,
+                mx.array([clean_length]),
+                [self.last_token],
+                [self.decoder_hidden],
+                config=self.decoding_config,
+            )
+
+            self.decoder_hidden = clean_state[0]
+            self.last_token = (
+                clean_result[0][-1].id if len(clean_result[0]) > 0 else None
+            )
+
+            dirty_result, _ = self.model.decode(
+                features[:, clean_length:],
+                mx.array(
+                    [
+                        features[:, clean_length:].shape[1]
+                    ]  # i believe in lazy evaluation
+                ),
+                [self.last_token],
+                [self.decoder_hidden],
+                config=self.decoding_config,
+            )
+
+            self.clean_tokens.extend(clean_result[0])
+            self.dirty_tokens = dirty_result[0]
+        elif isinstance(self.model, ParakeetCTC):
+            clean_result = self.model.decode(
+                features, mx.array([clean_length]), config=self.decoding_config
+            )
+
+            dirty_result = self.model.decode(
+                features[:, clean_length:],
+                mx.array(
+                    [
+                        features[:, clean_length:].shape[1]
+                    ]  # i believe in lazy evaluation
+                ),
+                config=self.decoding_config,
+            )
+
+            self.clean_tokens.extend(clean_result[0])
+            self.dirty_tokens = dirty_result[0]
+        else:
+            raise NotImplementedError("This model does not support real-time decoding")
