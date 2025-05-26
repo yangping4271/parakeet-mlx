@@ -36,6 +36,10 @@ class AlignedResult:
     def __post_init__(self) -> None:
         self.text = self.text.strip()
 
+    @property
+    def tokens(self) -> list[AlignedToken]:
+        return [token for sentence in self.sentences for token in sentence.tokens]
+
 
 def tokens_to_sentences(tokens: list[AlignedToken]) -> list[AlignedSentence]:
     sentences = []
