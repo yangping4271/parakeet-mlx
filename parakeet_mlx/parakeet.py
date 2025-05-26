@@ -87,7 +87,9 @@ class BaseParakeet(nn.Module):
 
         self.encoder = Conformer(encoder_args)
 
-    def generate(self, mel: mx.array) -> list[AlignedResult]:
+    def generate(
+        self, mel: mx.array, *, decoding_config: DecodingConfig = DecodingConfig()
+    ) -> list[AlignedResult]:
         """
         Generate with skip token logic for the Parakeet model, handling batches and single input. Uses greedy decoding.
         mel: [batch, sequence, mel_dim] or [sequence, mel_dim]
@@ -174,7 +176,12 @@ class BaseParakeet(nn.Module):
         return result
 
     def transcribe_stream(
-        self, context_size: tuple[int, int] = (256, 256), depth=1
+        self,
+        context_size: tuple[int, int] = (256, 256),
+        depth=1,
+        *,
+        keep_original_attention: bool = False,
+        decoding_config: DecodingConfig = DecodingConfig(),
     ) -> "StreamingParakeet":
         """
         Create a StreamingParakeet object for real-time (streaming) inference.
@@ -202,7 +209,13 @@ class BaseParakeet(nn.Module):
         Returns:
             StreamingParakeet: A context manager for streaming inference.
         """
-        return StreamingParakeet(self, context_size, depth)
+        return StreamingParakeet(
+            self,
+            context_size,
+            depth,
+            decoding_config=decoding_config,
+            keep_original_attention=keep_original_attention,
+        )
 
 
 # models
@@ -320,7 +333,9 @@ class ParakeetTDT(BaseParakeet):
 
         return results, hidden_state
 
-    def generate(self, mel: mx.array) -> list[AlignedResult]:
+    def generate(
+        self, mel: mx.array, *, decoding_config: DecodingConfig = DecodingConfig()
+    ) -> list[AlignedResult]:
         """
         Generate with TDT decoder for the Parakeet model, handling batches and single input. Uses greedy decoding.
         mel: [batch, sequence, mel_dim] or [sequence, mel_dim]
@@ -331,7 +346,7 @@ class ParakeetTDT(BaseParakeet):
         features, lengths = self.encoder(mel)
         mx.eval(features, lengths)
 
-        result, _ = self.decode(features, lengths)
+        result, _ = self.decode(features, lengths, config=decoding_config)
 
         return [
             sentences_to_result(tokens_to_sentences(hypothesis))
@@ -442,7 +457,9 @@ class ParakeetRNNT(BaseParakeet):
 
         return results, hidden_state
 
-    def generate(self, mel: mx.array) -> list[AlignedResult]:
+    def generate(
+        self, mel: mx.array, *, decoding_config: DecodingConfig = DecodingConfig()
+    ) -> list[AlignedResult]:
         """
         Generate with RNNT decoder for the Parakeet model, handling batches and single input. Uses greedy decoding.
         mel: [batch, sequence, mel_dim] or [sequence, mel_dim]
@@ -453,7 +470,7 @@ class ParakeetRNNT(BaseParakeet):
         features, lengths = self.encoder(mel)
         mx.eval(features, lengths)
 
-        result, _ = self.decode(features, lengths)
+        result, _ = self.decode(features, lengths, config=decoding_config)
 
         return [
             sentences_to_result(tokens_to_sentences(hypothesis))
@@ -568,7 +585,9 @@ class ParakeetCTC(BaseParakeet):
 
         return results
 
-    def generate(self, mel: mx.array) -> list[AlignedResult]:
+    def generate(
+        self, mel: mx.array, *, decoding_config: DecodingConfig = DecodingConfig()
+    ) -> list[AlignedResult]:
         """
         Generate with CTC decoder for the Parakeet model, handling batches and single input. Uses greedy decoding.
         mel: [batch, sequence, mel_dim] or [sequence, mel_dim]
@@ -578,7 +597,7 @@ class ParakeetCTC(BaseParakeet):
 
         features, lengths = self.encoder(mel)
 
-        result = self.decode(features, lengths)
+        result = self.decode(features, lengths, config=decoding_config)
 
         return [
             sentences_to_result(tokens_to_sentences(hypothesis))
@@ -606,12 +625,14 @@ class StreamingParakeet:
     mel_buffer: Optional[mx.array]
     decoder_hidden: Optional[tuple[mx.array, mx.array]] = None
     last_token: Optional[int] = None
-    clean_tokens: list[AlignedToken]
-    dirty_tokens: list[AlignedToken]
+
+    finalized_tokens: list[AlignedToken]
+    draft_tokens: list[AlignedToken]
 
     context_size: tuple[int, int]
     depth: int
     decoding_config: DecodingConfig
+    keep_original_attention: bool = False
 
     def __init__(
         self,
@@ -619,11 +640,13 @@ class StreamingParakeet:
         context_size: tuple[int, int],
         depth: int = 1,
         *,
+        keep_original_attention: bool = False,
         decoding_config: DecodingConfig = DecodingConfig(),
     ) -> None:
         self.context_size = context_size
         self.depth = depth
         self.decoding_config = decoding_config
+        self.keep_original_attention = keep_original_attention
 
         self.model = model
         self.cache = [
@@ -633,17 +656,21 @@ class StreamingParakeet:
 
         self.audio_buffer = mx.array([])
         self.mel_buffer = None
-        self.clean_tokens = []
-        self.dirty_tokens = []
+        self.finalized_tokens = []
+        self.draft_tokens = []
 
     def __enter__(self):
-        self.model.encoder.set_attention_model("rel_pos_local_attn", self.context_size)
+        if not self.keep_original_attention:
+            self.model.encoder.set_attention_model(
+                "rel_pos_local_attn", self.context_size
+            )
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        self.model.encoder.set_attention_model(
-            "rel_pos"
-        )  # hard-coded; might cache if there's actually new varient than rel_pos
+        if not self.keep_original_attention:
+            self.model.encoder.set_attention_model(
+                "rel_pos"
+            )  # hard-coded; might cache if there's actually new varient than rel_pos
         del self.audio_buffer
         del self.cache
 
@@ -652,7 +679,7 @@ class StreamingParakeet:
     @property
     def keep_size(self):
         """Indicates how many encoded feature frames to keep in KV cache"""
-        return self.context_size[0] * self.depth
+        return self.context_size[0]
 
     @property
     def drop_size(self):
@@ -663,7 +690,7 @@ class StreamingParakeet:
     def result(self) -> AlignedResult:
         """Transcription result"""
         return sentences_to_result(
-            tokens_to_sentences(self.clean_tokens + self.dirty_tokens)
+            tokens_to_sentences(self.finalized_tokens + self.draft_tokens)
         )
 
     def add_audio(self, audio: mx.array) -> None:
@@ -724,29 +751,29 @@ class StreamingParakeet:
         ]
 
         # we decode in two phase
-        # first phase: non-drop region decode - let's call them 'clean region'
-        # second phase: dirty region decode (will be dropped)
-        clean_length = max(0, length - self.drop_size)
+        # first phase: finalized region decode
+        # second phase: draft region decode (will be dropped)
+        finalized_length = max(0, length - self.drop_size)
 
         if isinstance(self.model, ParakeetTDT) or isinstance(self.model, ParakeetRNNT):
-            clean_result, clean_state = self.model.decode(
+            finalized_tokens, finalized_state = self.model.decode(
                 features,
-                mx.array([clean_length]),
+                mx.array([finalized_length]),
                 [self.last_token],
                 [self.decoder_hidden],
                 config=self.decoding_config,
             )
 
-            self.decoder_hidden = clean_state[0]
+            self.decoder_hidden = finalized_state[0]
             self.last_token = (
-                clean_result[0][-1].id if len(clean_result[0]) > 0 else None
+                finalized_tokens[0][-1].id if len(finalized_tokens[0]) > 0 else None
             )
 
-            dirty_result, _ = self.model.decode(
-                features[:, clean_length:],
+            draft_tokens, _ = self.model.decode(
+                features[:, finalized_length:],
                 mx.array(
                     [
-                        features[:, clean_length:].shape[1]
+                        features[:, finalized_length:].shape[1]
                     ]  # i believe in lazy evaluation
                 ),
                 [self.last_token],
@@ -754,24 +781,24 @@ class StreamingParakeet:
                 config=self.decoding_config,
             )
 
-            self.clean_tokens.extend(clean_result[0])
-            self.dirty_tokens = dirty_result[0]
+            self.finalized_tokens.extend(finalized_tokens[0])
+            self.draft_tokens = draft_tokens[0]
         elif isinstance(self.model, ParakeetCTC):
-            clean_result = self.model.decode(
-                features, mx.array([clean_length]), config=self.decoding_config
+            finalized_tokens = self.model.decode(
+                features, mx.array([finalized_length]), config=self.decoding_config
             )
 
-            dirty_result = self.model.decode(
-                features[:, clean_length:],
+            draft_tokens = self.model.decode(
+                features[:, finalized_length:],
                 mx.array(
                     [
-                        features[:, clean_length:].shape[1]
+                        features[:, finalized_length:].shape[1]
                     ]  # i believe in lazy evaluation
                 ),
                 config=self.decoding_config,
             )
 
-            self.clean_tokens.extend(clean_result[0])
-            self.dirty_tokens = dirty_result[0]
+            self.finalized_tokens.extend(finalized_tokens[0])
+            self.draft_tokens = draft_tokens[0]
         else:
             raise NotImplementedError("This model does not support real-time decoding")
