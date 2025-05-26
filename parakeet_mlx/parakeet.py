@@ -91,8 +91,17 @@ class BaseParakeet(nn.Module):
         self, mel: mx.array, *, decoding_config: DecodingConfig = DecodingConfig()
     ) -> list[AlignedResult]:
         """
-        Generate with skip token logic for the Parakeet model, handling batches and single input. Uses greedy decoding.
-        mel: [batch, sequence, mel_dim] or [sequence, mel_dim]
+        Generate transcription results from the Parakeet model, handling batches and single input.
+        Args:
+            mel (mx.array):
+                Mel-spectrogram input with shape [batch, sequence, mel_dim] for
+                batch processing or [sequence, mel_dim] for single input.
+            decoding_config (DecodingConfig, optional):
+                Configuration object that controls decoding behavior and
+                parameters for the generation process. Defaults to DecodingConfig().
+        Returns:
+            list[AlignedResult]: List of transcription results with aligned tokens
+                and sentences, one for each input in the batch.
         """
         raise NotImplementedError
 
@@ -107,16 +116,24 @@ class BaseParakeet(nn.Module):
     ) -> AlignedResult:
         """
         Transcribe an audio file, with optional chunking for long files.
-
         Args:
-            path: Path to the audio file
-            dtype: Data type for processing
-            chunk_duration: If provided, splits audio into chunks of this length for processing
-            overlap_duration: Overlap between chunks (only used when chunking)
-            chunk_callback: A function to call back when chunk is processed, called with (current_position, total_position)
-
+            path (Path | str):
+                Path to the audio file to be transcribed.
+            dtype (mx.Dtype, optional):
+                Data type for processing the audio. Defaults to mx.bfloat16.
+            chunk_duration (float, optional):
+                If provided, splits audio into chunks of this length (in seconds)
+                for processing. When None, processes the entire file at once.
+                Defaults to None.
+            overlap_duration (float, optional):
+                Overlap between consecutive chunks in seconds. Only used when
+                chunk_duration is specified. Defaults to 15.0.
+            chunk_callback (Callable, optional):
+                A function to call when each chunk is processed. The callback
+                is called with (current_position, total_position) arguments
+                to track progress. Defaults to None.
         Returns:
-            Transcription result with aligned tokens and sentences
+            AlignedResult: Transcription result with aligned tokens and sentences.
         """
         audio_path = Path(path)
         audio_data = load_audio(audio_path, self.preprocessor_config.sample_rate, dtype)
@@ -185,27 +202,28 @@ class BaseParakeet(nn.Module):
     ) -> "StreamingParakeet":
         """
         Create a StreamingParakeet object for real-time (streaming) inference.
-
         Args:
             context_size (tuple[int, int], optional):
                 A pair (left_context, right_context) for attention context windows.
-
             depth (int, optional):
                 How many encoder layers will carry over their key/value
                 cache (i.e. hidden state) exactly across chunks. Because
                 we use local (non-causal) attention, the cache is only
                 guaranteed to match a full forward pass up through each
                 cached layer:
-
-                    • depth=1 (default): only the first encoder layer’s
+                    • depth=1 (default): only the first encoder layer's
                     cache matches exactly.
                     • depth=2: the first two layers match, and so on.
-                    • depth=N (model’s total layers): full equivalence to
+                    • depth=N (model's total layers): full equivalence to
                     a non-streaming forward pass.
-
-                Setting `depth` larger than the model’s total number
+                Setting `depth` larger than the model's total number
                 of encoder layers won't have any impacts.
-
+            keep_original_attention (bool, optional):
+                Whether to preserve the original attention class
+                during streaming inference. Defaults to False. (Will switch to local attention.)
+            decoding_config (DecodingConfig, optional):
+                Configuration object that controls decoding behavior
+                Defaults to DecodingConfig().
         Returns:
             StreamingParakeet: A context manager for streaming inference.
         """
@@ -336,10 +354,6 @@ class ParakeetTDT(BaseParakeet):
     def generate(
         self, mel: mx.array, *, decoding_config: DecodingConfig = DecodingConfig()
     ) -> list[AlignedResult]:
-        """
-        Generate with TDT decoder for the Parakeet model, handling batches and single input. Uses greedy decoding.
-        mel: [batch, sequence, mel_dim] or [sequence, mel_dim]
-        """
         if len(mel.shape) == 2:
             mel = mx.expand_dims(mel, 0)
 
@@ -460,10 +474,6 @@ class ParakeetRNNT(BaseParakeet):
     def generate(
         self, mel: mx.array, *, decoding_config: DecodingConfig = DecodingConfig()
     ) -> list[AlignedResult]:
-        """
-        Generate with RNNT decoder for the Parakeet model, handling batches and single input. Uses greedy decoding.
-        mel: [batch, sequence, mel_dim] or [sequence, mel_dim]
-        """
         if len(mel.shape) == 2:
             mel = mx.expand_dims(mel, 0)
 
@@ -588,10 +598,6 @@ class ParakeetCTC(BaseParakeet):
     def generate(
         self, mel: mx.array, *, decoding_config: DecodingConfig = DecodingConfig()
     ) -> list[AlignedResult]:
-        """
-        Generate with CTC decoder for the Parakeet model, handling batches and single input. Uses greedy decoding.
-        mel: [batch, sequence, mel_dim] or [sequence, mel_dim]
-        """
         if len(mel.shape) == 2:
             mel = mx.expand_dims(mel, 0)
 
