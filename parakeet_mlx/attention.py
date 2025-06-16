@@ -240,11 +240,13 @@ class RelPositionMultiHeadLocalAttention(RelPositionMultiHeadAttention):
         uint target_idx = thread_position_in_grid.x;
         uint k_rel_idx = thread_position_in_grid.y;
 
+        if (target_idx >= B * H * S_q) return;
+
         uint s_q_idx = target_idx % S_q;
         uint remaining_idx = target_idx / S_q;
         uint h_idx = remaining_idx % H;
         uint b_idx = remaining_idx / H;
-        uint k_offset = uint(int(k_rel_idx));
+        uint k_offset = k_rel_idx;
 
         uint stick_q_k_idx = S_k - S_q + s_q_idx;
         // stick to right (assuming S_k >= S_q)
@@ -252,7 +254,7 @@ class RelPositionMultiHeadLocalAttention(RelPositionMultiHeadAttention):
         int s_k_idx_signed = int(stick_q_k_idx) + int(k_offset) - int(W);
         bool is_out_of_bounds = (s_k_idx_signed < 0) || (s_k_idx_signed >= S_k);
 
-        float current_sum = 0.0f;
+        T result;
 
         if (!is_out_of_bounds) {
             uint s_k_idx = uint(s_k_idx_signed);
@@ -274,18 +276,58 @@ class RelPositionMultiHeadLocalAttention(RelPositionMultiHeadAttention):
             const device T* q_vec_ptr = q + q_base_offset;
             const device T* k_vec_ptr = k + k_base_offset;
 
-            for (uint d_idx = 0; d_idx < D; ++d_idx) {
-                current_sum += (float)(q_vec_ptr[d_idx]) * (float)(k_vec_ptr[d_idx]);
+            result = T(0.0);
+            uint d_idx = 0;
+
+            // hand unrolling
+            for (; d_idx + 16 <= D; d_idx += 16) {
+                T q_vals[16], k_vals[16];
+
+                for (uint i = 0; i < 16; ++i) {
+                    q_vals[i] = q_vec_ptr[d_idx + i];
+                    k_vals[i] = k_vec_ptr[d_idx + i];
+                }
+
+                result +=
+                    q_vals[0] * k_vals[0] + q_vals[1] * k_vals[1] +
+                    q_vals[2] * k_vals[2] + q_vals[3] * k_vals[3] +
+                    q_vals[4] * k_vals[4] + q_vals[5] * k_vals[5] +
+                    q_vals[6] * k_vals[6] + q_vals[7] * k_vals[7] +
+                    q_vals[8] * k_vals[8] + q_vals[9] * k_vals[9] +
+                    q_vals[10] * k_vals[10] + q_vals[11] * k_vals[11] +
+                    q_vals[12] * k_vals[12] + q_vals[13] * k_vals[13] +
+                    q_vals[14] * k_vals[14] + q_vals[15] * k_vals[15];
             }
+
+            for (; d_idx + 8 <= D; d_idx += 8) {
+                result +=
+                    q_vec_ptr[d_idx] * k_vec_ptr[d_idx] +
+                    q_vec_ptr[d_idx + 1] * k_vec_ptr[d_idx + 1] +
+                    q_vec_ptr[d_idx + 2] * k_vec_ptr[d_idx + 2] +
+                    q_vec_ptr[d_idx + 3] * k_vec_ptr[d_idx + 3] +
+                    q_vec_ptr[d_idx + 4] * k_vec_ptr[d_idx + 4] +
+                    q_vec_ptr[d_idx + 5] * k_vec_ptr[d_idx + 5] +
+                    q_vec_ptr[d_idx + 6] * k_vec_ptr[d_idx + 6] +
+                    q_vec_ptr[d_idx + 7] * k_vec_ptr[d_idx + 7];
+            }
+
+            for (; d_idx + 4 <= D; d_idx += 4) {
+                result +=
+                    q_vec_ptr[d_idx] * k_vec_ptr[d_idx] +
+                    q_vec_ptr[d_idx + 1] * k_vec_ptr[d_idx + 1] +
+                    q_vec_ptr[d_idx + 2] * k_vec_ptr[d_idx + 2] +
+                    q_vec_ptr[d_idx + 3] * k_vec_ptr[d_idx + 3];
+            }
+
+            for (; d_idx < D; ++d_idx) {
+                result += q_vec_ptr[d_idx] * k_vec_ptr[d_idx];
+            }
+        } else {
+            result = T(-INFINITY);
         }
 
-        // out[b, h, s_q, k_rel]
         uint out_idx = target_idx * K_rel + k_rel_idx;
-        if (is_out_of_bounds) {
-            out[out_idx] = -INFINITY;
-        } else {
-            out[out_idx] = (T) current_sum;
-        }
+        out[out_idx] = result;
         """
 
         B, H, S_q, D = q.shape
@@ -298,7 +340,7 @@ class RelPositionMultiHeadLocalAttention(RelPositionMultiHeadAttention):
         grid_dim_z = 1
 
         kernel_fn = mx.fast.metal_kernel(
-            name="local_qk_matmul",
+            name="local_qk_perf",
             input_names=["q", "k"],
             output_names=["out"],
             source=KERNEL,
@@ -307,8 +349,29 @@ class RelPositionMultiHeadLocalAttention(RelPositionMultiHeadAttention):
         grid_dim_x = max(1, grid_dim_x)
         grid_dim_y = max(1, grid_dim_y)
 
-        tg_y = min(grid_dim_y, 32)
-        tg_x = min(grid_dim_x, 1024 // tg_y)
+        if D >= 256:
+            tg_y = min(grid_dim_y, 4)
+            tg_x = min(grid_dim_x, 256)
+        elif D >= 128:
+            tg_y = min(grid_dim_y, 8)
+            tg_x = min(grid_dim_x, 128)
+        elif D >= 32:
+            tg_y = min(grid_dim_y, 16)
+            tg_x = min(grid_dim_x, 64)
+        else:
+            tg_y = min(grid_dim_y, 32)
+            tg_x = min(grid_dim_x, 32)
+
+        if tg_x > 32:
+            tg_x = 64
+        elif tg_x > 16:
+            tg_x = 32
+        elif tg_x > 8:
+            tg_x = 16
+        elif tg_x > 4:
+            tg_x = 8
+        else:
+            tg_x = max(tg_x, 1)
 
         tg_x = max(tg_x, 1)
         tg_y = max(tg_y, 1)
