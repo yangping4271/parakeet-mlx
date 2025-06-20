@@ -410,7 +410,7 @@ class RelPositionMultiHeadLocalAttention(RelPositionMultiHeadAttention):
         uint b_idx = bh_idx / H;
         uint h_idx = bh_idx % H;
 
-        float current_sum = 0.0f;
+        T current_sum = 0.0f;
 
         // p[b, h, s_p, k_rel]
         uint P_H_stride = S_p * K_rel;
@@ -427,14 +427,68 @@ class RelPositionMultiHeadLocalAttention(RelPositionMultiHeadAttention):
         uint stick_p_v_idx = S_v - S_p + s_p_idx;
         // stick to right (assuming S_v >= S_p)
 
-        for (uint k = 0; k < K_rel; ++k) {
-            int s_v_idx_signed = int(stick_p_v_idx) + int(k) - int(W);  // for boundary check
+        uint k = 0;
+        // hand unrolling
+        for (; k + 16 <= K_rel; k += 16) {
+            float prob_vals[16], v_vals[16];
+            int s_v_indices[16];
+            bool valid[16];
+
+            for (uint i = 0; i < 16; ++i) {
+                s_v_indices[i] = int(stick_p_v_idx) + int(k + i) - int(W);
+                valid[i] = (s_v_indices[i] >= 0 && s_v_indices[i] < S_v);
+                if (valid[i]) {
+                    uint prob_idx = b_idx * P_B_stride + h_idx * P_H_stride + s_p_idx * K_rel + (k + i);
+                    uint v_idx = b_idx * V_B_stride + h_idx * V_H_stride + uint(s_v_indices[i]) * D_v + d_idx;
+                    prob_vals[i] = prob[prob_idx];
+                    v_vals[i] = v[v_idx];
+                } else {
+                    prob_vals[i] = 0.0f;
+                    v_vals[i] = 0.0f;
+                }
+            }
+
+            current_sum +=
+                prob_vals[0] * v_vals[0] + prob_vals[1] * v_vals[1] +
+                prob_vals[2] * v_vals[2] + prob_vals[3] * v_vals[3] +
+                prob_vals[4] * v_vals[4] + prob_vals[5] * v_vals[5] +
+                prob_vals[6] * v_vals[6] + prob_vals[7] * v_vals[7] +
+                prob_vals[8] * v_vals[8] + prob_vals[9] * v_vals[9] +
+                prob_vals[10] * v_vals[10] + prob_vals[11] * v_vals[11] +
+                prob_vals[12] * v_vals[12] + prob_vals[13] * v_vals[13] +
+                prob_vals[14] * v_vals[14] + prob_vals[15] * v_vals[15];
+        }
+
+        for (; k + 8 <= K_rel; k += 8) {
+            for (uint i = 0; i < 8; ++i) {
+                int s_v_idx_signed = int(stick_p_v_idx) + int(k + i) - int(W);
+                if (s_v_idx_signed >= 0 && s_v_idx_signed < S_v) {
+                    uint s_v_idx = uint(s_v_idx_signed);
+                    uint prob_idx = b_idx * P_B_stride + h_idx * P_H_stride + s_p_idx * K_rel + (k + i);
+                    uint v_idx = b_idx * V_B_stride + h_idx * V_H_stride + s_v_idx * D_v + d_idx;
+                    current_sum += prob[prob_idx] * v[v_idx];
+                }
+            }
+        }
+
+        for (; k + 4 <= K_rel; k += 4) {
+            for (uint i = 0; i < 4; ++i) {
+                int s_v_idx_signed = int(stick_p_v_idx) + int(k + i) - int(W);
+                if (s_v_idx_signed >= 0 && s_v_idx_signed < S_v) {
+                    uint s_v_idx = uint(s_v_idx_signed);
+                    uint prob_idx = b_idx * P_B_stride + h_idx * P_H_stride + s_p_idx * K_rel + (k + i);
+                    uint v_idx = b_idx * V_B_stride + h_idx * V_H_stride + s_v_idx * D_v + d_idx;
+                    current_sum += prob[prob_idx] * v[v_idx];
+                }
+            }
+        }
+
+        for (; k < K_rel; ++k) {
+            int s_v_idx_signed = int(stick_p_v_idx) + int(k) - int(W);
             if (s_v_idx_signed >= 0 && s_v_idx_signed < S_v) {
                 uint s_v_idx = uint(s_v_idx_signed);
-                uint prob_idx =
-                    b_idx * P_B_stride + h_idx * P_H_stride + s_p_idx * K_rel + k;
-                uint v_idx =
-                    b_idx * V_B_stride + h_idx * V_H_stride + s_v_idx * D_v + d_idx;
+                uint prob_idx = b_idx * P_B_stride + h_idx * P_H_stride + s_p_idx * K_rel + k;
+                uint v_idx = b_idx * V_B_stride + h_idx * V_H_stride + s_v_idx * D_v + d_idx;
                 current_sum += prob[prob_idx] * v[v_idx];
             }
         }
