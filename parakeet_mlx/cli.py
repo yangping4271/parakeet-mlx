@@ -47,39 +47,26 @@ def to_txt(result: AlignedResult) -> str:
     return result.text.strip()
 
 
-def to_srt(result: AlignedResult, highlight_words: bool = False) -> str:
+def to_srt(result: AlignedResult, timestamps: bool = False) -> str:
     """
     Format transcription result as an SRT file.
     """
     srt_content = []
     entry_index = 1
-    if highlight_words:
-        for sentence in result.sentences:
-            for i, token in enumerate(sentence.tokens):
-                start_time = format_timestamp(token.start, decimal_marker=",")
-                end_time = format_timestamp(
-                    token.end
-                    if token == sentence.tokens[-1]
-                    else sentence.tokens[i + 1].start,
-                    decimal_marker=",",
-                )
+    if timestamps:
+        words = result.words
+        for word in words:
+            if not word.text.strip():
+                continue
+            start_time = format_timestamp(word.start, decimal_marker=",")
+            end_time = format_timestamp(word.end, decimal_marker=",")
+            text = word.text.strip()
 
-                text = ""
-                for j, inner_token in enumerate(sentence.tokens):
-                    if i == j:
-                        text += inner_token.text.replace(
-                            inner_token.text.strip(),
-                            f"<u>{inner_token.text.strip()}</u>",
-                        )
-                    else:
-                        text += inner_token.text
-                text.strip()
-
-                srt_content.append(f"{entry_index}")
-                srt_content.append(f"{start_time} --> {end_time}")
-                srt_content.append(text)
-                srt_content.append("")
-                entry_index += 1
+            srt_content.append(f"{entry_index}")
+            srt_content.append(f"{start_time} --> {end_time}")
+            srt_content.append(text)
+            srt_content.append("")
+            entry_index += 1
     else:
         for sentence in result.sentences:
             start_time = format_timestamp(sentence.start, decimal_marker=",")
@@ -95,36 +82,23 @@ def to_srt(result: AlignedResult, highlight_words: bool = False) -> str:
     return "\n".join(srt_content)
 
 
-def to_vtt(result: AlignedResult, highlight_words: bool = False) -> str:
+def to_vtt(result: AlignedResult, timestamps: bool = False) -> str:
     """
     Format transcription result as a VTT file.
     """
     vtt_content = ["WEBVTT", ""]
-    if highlight_words:
-        for sentence in result.sentences:
-            for i, token in enumerate(sentence.tokens):
-                start_time = format_timestamp(token.start, decimal_marker=".")
-                end_time = format_timestamp(
-                    token.end
-                    if token == sentence.tokens[-1]
-                    else sentence.tokens[i + 1].start,
-                    decimal_marker=".",
-                )
+    if timestamps:
+        words = result.words
+        for word in words:
+            if not word.text.strip():
+                continue
+            start_time = format_timestamp(word.start, decimal_marker=".")
+            end_time = format_timestamp(word.end, decimal_marker=".")
+            text = word.text.strip()
 
-                text_line = ""
-                for j, inner_token in enumerate(sentence.tokens):
-                    if i == j:
-                        text_line += inner_token.text.replace(
-                            inner_token.text.strip(),
-                            f"<b>{inner_token.text.strip()}</b>",
-                        )
-                    else:
-                        text_line += inner_token.text
-                text_line = text_line.strip()
-
-                vtt_content.append(f"{start_time} --> {end_time}")
-                vtt_content.append(text_line)
-                vtt_content.append("")
+            vtt_content.append(f"{start_time} --> {end_time}")
+            vtt_content.append(text)
+            vtt_content.append("")
     else:
         for sentence in result.sentences:
             start_time = format_timestamp(sentence.start, decimal_marker=".")
@@ -194,9 +168,9 @@ def transcribe(
             help="Template for output filenames, e.g. '{filename}_{date}_{index}'"
         ),
     ] = "{filename}",
-    highlight_words: Annotated[
+    timestamps: Annotated[
         bool,
-        typer.Option(help="Underline/timestamp each word as it is spoken in srt/vtt"),
+        typer.Option(help="Output word-level timestamps in srt/vtt formats"),
     ] = False,
     chunk_duration: Annotated[
         float,
@@ -238,13 +212,13 @@ def transcribe(
     if verbose:
         print(f"Output directory: [bold cyan]{output_dir.resolve()}[/bold cyan]")
         print(f"Output format(s): [bold cyan]{output_format}[/bold cyan]")
-        if output_format in ["srt", "vtt", "all"] and highlight_words:
-            print("Highlight words: [bold cyan]Enabled[/bold cyan]")
+        if output_format in ["srt", "vtt", "all"] and timestamps:
+            print("Timestamps: [bold cyan]Enabled[/bold cyan]")
 
     formatters = {
         "txt": to_txt,
-        "srt": lambda r: to_srt(r, highlight_words=highlight_words),
-        "vtt": lambda r: to_vtt(r, highlight_words=highlight_words),
+        "srt": lambda r: to_srt(r, timestamps=timestamps),
+        "vtt": lambda r: to_vtt(r, timestamps=timestamps),
         "json": to_json,
     }
 
@@ -333,7 +307,7 @@ def transcribe(
             progress.update(task, total=total_files, completed=i + 1)
 
     print(
-        f"\n[bold green]Transcription complete.[/bold green] Outputs saved in '{output_dir.resolve()}'."
+        f"\n[bold green]Transcription complete.[/bold green] Outputs saved in '{output_dir.resolve()}'"
     )
 
 

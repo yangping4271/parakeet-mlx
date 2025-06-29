@@ -29,6 +29,14 @@ class AlignedSentence:
 
 
 @dataclass
+class AlignedWord:
+    text: str
+    start: float
+    end: float
+    duration: float
+
+
+@dataclass
 class AlignedResult:
     text: str
     sentences: list[AlignedSentence]
@@ -39,6 +47,36 @@ class AlignedResult:
     @property
     def tokens(self) -> list[AlignedToken]:
         return [token for sentence in self.sentences for token in sentence.tokens]
+
+    @property
+    def words(self) -> list[AlignedWord]:
+        words = []
+        current_word_tokens = []
+
+        for token in self.tokens:
+            # Check for a new word, which typically starts with a space
+            if token.text.startswith(" "):
+                if current_word_tokens:
+                    text = "".join(t.text for t in current_word_tokens).strip()
+                    if text:
+                        start = current_word_tokens[0].start
+                        end = current_word_tokens[-1].end
+                        duration = end - start
+                        words.append(AlignedWord(text, start, end, duration))
+                current_word_tokens = [token]
+            else:
+                current_word_tokens.append(token)
+
+        # Append the last word
+        if current_word_tokens:
+            text = "".join(t.text for t in current_word_tokens).strip()
+            if text:
+                start = current_word_tokens[0].start
+                end = current_word_tokens[-1].end
+                duration = end - start
+                words.append(AlignedWord(text, start, end, duration))
+
+        return words
 
 
 def tokens_to_sentences(tokens: list[AlignedToken]) -> list[AlignedSentence]:

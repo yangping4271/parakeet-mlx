@@ -49,7 +49,7 @@ parakeet-mlx <audio_files> [OPTIONS]
 - `--output-template` (default: `{filename}`)
   - Template for output filenames, `{filename}`, `{index}`, `{date}` is supported.
 
-- `--highlight-words` (default: False)
+- `--timestamps` (default: False)
   - Enable word-level timestamps in SRT/VTT outputs
 
 - `--verbose` / `-v` (default: False)
@@ -71,7 +71,7 @@ parakeet-mlx <audio_files> [OPTIONS]
 parakeet-mlx audio.mp3
 
 # Multiple files with word-level timestamps of VTT subtitle
-parakeet-mlx *.mp3 --output-format vtt --highlight-words
+parakeet-mlx *.mp3 --output-format vtt --timestamps
 
 # Generate all output formats
 parakeet-mlx audio.mp3 --output-format all
