@@ -17,9 +17,6 @@ from typing_extensions import Annotated
 
 from parakeet_mlx import AlignedResult, AlignedSentence, AlignedToken, from_pretrained
 
-app = typer.Typer(no_args_is_help=True)
-
-
 # helpers
 def format_timestamp(
     seconds: float, always_include_hours: bool = True, decimal_marker: str = ","
@@ -141,8 +138,7 @@ def to_json(result: AlignedResult) -> str:
     return json.dumps(output_dict, indent=2, ensure_ascii=False)
 
 
-@app.command("transcribe")
-def transcribe(
+def main(
     audios: Annotated[
         List[Path],
         typer.Argument(
@@ -310,6 +306,9 @@ def transcribe(
         f"\n[bold green]Transcription complete.[/bold green] Outputs saved in '{output_dir.resolve()}'"
     )
 
+
+app = typer.Typer()
+app.command()(main)
 
 if __name__ == "__main__":
     app()
